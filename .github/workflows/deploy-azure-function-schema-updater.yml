@@ -1,0 +1,56 @@
+# Deploys the connector registry → Supabase timer (daily schema sync).
+#
+# Prerequisites in Azure:
+#   - Linux Function App on Flex Consumption (Python 3.12), Storage, Application Insights (recommended)
+#   - For publish-profile deploys, Flex requires sku: flexconsumption on the deploy step (set below).
+#
+# GitHub configuration (repository Settings → Secrets and variables):
+#   Secrets:
+#     AZURE_FUNCTIONAPP_SCHEMA_UPDATER_PUBLISH_PROFILE  — download from Function App → Get publish profile
+#   Variables (recommended; optional if you embed the name in the secret workflow):
+#     AZURE_FUNCTIONAPP_SCHEMA_UPDATER_NAME             — Function App name (e.g. func-dravya-schema-updater-np)
+#
+# Alternatively, use azure/login@v2 with a service principal and omit publish-profile;
+# then add a step that runs `func azure functionapp publish` with the Azure CLI.
+
+name: Deploy Azure Function — schema updater
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "azure-function-schema-updater/**"
+      - ".github/workflows/deploy-azure-function-schema-updater.yml"
+  workflow_dispatch:
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: azure-function-schema-updater
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies into .python_packages
+        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ vars.AZURE_FUNCTIONAPP_SCHEMA_UPDATER_NAME }}
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_SCHEMA_UPDATER_PUBLISH_PROFILE }}
+          respect-funcignore: true
+          scm-do-build-during-deployment: false
+          sku: flexconsumption
