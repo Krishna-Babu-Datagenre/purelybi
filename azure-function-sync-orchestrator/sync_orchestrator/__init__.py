@@ -38,8 +38,8 @@ def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
-def resolve_job_container_name(client: ContainerAppsAPIClient) -> str:
-    """Resolve the actual job container name from Azure when possible.
+def resolve_job_container(client: ContainerAppsAPIClient) -> tuple[str, str | None]:
+    """Resolve the actual job container name and image from Azure when possible.
 
     This avoids mismatches between portal-generated names and local assumptions.
     """
@@ -54,15 +54,24 @@ def resolve_job_container_name(client: ContainerAppsAPIClient) -> str:
             containers = getattr(getattr(job, "template", None), "containers", None)
         if containers:
             first = containers[0]
-            name = first.get("name") if isinstance(first, dict) else getattr(first, "name", None)
+            name = (
+                first.get("name")
+                if isinstance(first, dict)
+                else getattr(first, "name", None)
+            )
+            image = (
+                first.get("image")
+                if isinstance(first, dict)
+                else getattr(first, "image", None)
+            )
             if name:
-                return str(name)
+                return str(name), (str(image) if image else None)
     except Exception:
         logger.warning(
             "Could not auto-resolve ACA job container name; using ACA_JOB_CONTAINER_NAME=%s",
             ACA_JOB_CONTAINER_NAME,
         )
-    return ACA_JOB_CONTAINER_NAME
+    return ACA_JOB_CONTAINER_NAME, None
 
 
 def get_eligible_configs(supabase: Client) -> list[dict]:
@@ -126,7 +135,7 @@ def start_container_job(
     Returns the execution name if started, None on failure.
     """
     client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
-    container_name = resolve_job_container_name(client)
+    container_name, container_image = resolve_job_container(client)
 
     user_id = config["user_id"]
     connector_name = config["connector_name"]
@@ -134,36 +143,37 @@ def start_container_job(
 
     # begin_start(template=...) expects JobExecutionTemplate shape directly.
     # If wrapped inside {"template": ...}, SDK serializes unknown fields away.
-    job_execution_template = {
-        "containers": [
+    container_override = {
+        "name": container_name,
+        "env": [
+            {"name": "SYNC_CONFIG_ID", "value": config_id},
+            {"name": "SYNC_USER_ID", "value": user_id},
             {
-                "name": container_name,
-                "env": [
-                    {"name": "SYNC_CONFIG_ID", "value": config_id},
-                    {"name": "SYNC_USER_ID", "value": user_id},
-                    {
-                        "name": "SYNC_CONNECTOR_NAME",
-                        "value": connector_name,
-                    },
-                    {"name": "SUPABASE_URL", "value": SUPABASE_URL},
-                    {
-                        "name": "SUPABASE_SERVICE_ROLE_KEY",
-                        "value": SUPABASE_SERVICE_KEY,
-                    },
-                    {
-                        "name": "AIRBYTE_ENABLE_UNSAFE_CODE",
-                        "value": "true",
-                    },
-                ],
-            }
-        ]
+                "name": "SYNC_CONNECTOR_NAME",
+                "value": connector_name,
+            },
+            {"name": "SUPABASE_URL", "value": SUPABASE_URL},
+            {
+                "name": "SUPABASE_SERVICE_ROLE_KEY",
+                "value": SUPABASE_SERVICE_KEY,
+            },
+            {
+                "name": "AIRBYTE_ENABLE_UNSAFE_CODE",
+                "value": "true",
+            },
+        ],
     }
+    if container_image:
+        container_override["image"] = container_image
+
+    job_execution_template = {"containers": [container_override]}
 
     try:
         logger.info(
-            "Starting ACA job=%s with container=%s and SYNC_CONFIG_ID=%s",
+            "Starting ACA job=%s with container=%s image=%s and SYNC_CONFIG_ID=%s",
             ACA_JOB_NAME,
             container_name,
+            container_image or "<unchanged>",
             config_id,
         )
         result = client.jobs.begin_start(
