@@ -38,8 +38,10 @@ def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
-def resolve_job_container(client: ContainerAppsAPIClient) -> tuple[str, str | None]:
-    """Resolve the actual job container name and image from Azure when possible.
+def resolve_job_container(
+    client: ContainerAppsAPIClient,
+) -> tuple[str, str | None, list[dict]]:
+    """Resolve the actual job container name/image/env from Azure when possible.
 
     This avoids mismatches between portal-generated names and local assumptions.
     """
@@ -65,13 +67,44 @@ def resolve_job_container(client: ContainerAppsAPIClient) -> tuple[str, str | No
                 else getattr(first, "image", None)
             )
             if name:
-                return str(name), (str(image) if image else None)
+                raw_env = (
+                    first.get("env")
+                    if isinstance(first, dict)
+                    else getattr(first, "env", None)
+                ) or []
+                env_list: list[dict] = []
+                for item in raw_env:
+                    env_name = (
+                        item.get("name")
+                        if isinstance(item, dict)
+                        else getattr(item, "name", None)
+                    )
+                    if not env_name:
+                        continue
+                    env_entry: dict = {"name": str(env_name)}
+                    if isinstance(item, dict):
+                        if "value" in item and item.get("value") is not None:
+                            env_entry["value"] = item["value"]
+                        if (
+                            "secretRef" in item
+                            and item.get("secretRef") is not None
+                        ):
+                            env_entry["secretRef"] = item["secretRef"]
+                    else:
+                        item_value = getattr(item, "value", None)
+                        item_secret_ref = getattr(item, "secret_ref", None)
+                        if item_value is not None:
+                            env_entry["value"] = item_value
+                        if item_secret_ref is not None:
+                            env_entry["secretRef"] = item_secret_ref
+                    env_list.append(env_entry)
+                return str(name), (str(image) if image else None), env_list
     except Exception:
         logger.warning(
             "Could not auto-resolve ACA job container name; using ACA_JOB_CONTAINER_NAME=%s",
             ACA_JOB_CONTAINER_NAME,
         )
-    return ACA_JOB_CONTAINER_NAME, None
+    return ACA_JOB_CONTAINER_NAME, None, []
 
 
 def get_eligible_configs(supabase: Client) -> list[dict]:
@@ -80,7 +113,7 @@ def get_eligible_configs(supabase: Client) -> list[dict]:
     An integration is eligible when:
       1. is_active = TRUE
       2. sync_validated = TRUE (passed a test sync during onboarding)
-      3. last_sync_status is NOT 'running' (avoid double-runs)
+      3. last_sync_status is NOT 'queued'/'running' (avoid double-runs)
       4. last_sync_status is NOT 'reauth_required' (needs human intervention)
       5. Enough time has passed since last_sync_at based on sync_frequency_minutes
     """
@@ -92,6 +125,7 @@ def get_eligible_configs(supabase: Client) -> list[dict]:
         .select("*")
         .eq("is_active", True)
         .eq("sync_validated", True)
+        .neq("last_sync_status", "queued")
         .neq("last_sync_status", "running")
         .neq("last_sync_status", "reauth_required")
         .execute()
@@ -135,7 +169,7 @@ def start_container_job(
     Returns the execution name if started, None on failure.
     """
     client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
-    container_name, container_image = resolve_job_container(client)
+    container_name, container_image, base_env = resolve_job_container(client)
 
     user_id = config["user_id"]
     connector_name = config["connector_name"]
@@ -143,25 +177,26 @@ def start_container_job(
 
     # begin_start(template=...) expects JobExecutionTemplate shape directly.
     # If wrapped inside {"template": ...}, SDK serializes unknown fields away.
+    env_by_name = {entry["name"]: entry for entry in base_env if "name" in entry}
+    env_by_name["SYNC_CONFIG_ID"] = {"name": "SYNC_CONFIG_ID", "value": config_id}
+    env_by_name["SYNC_USER_ID"] = {"name": "SYNC_USER_ID", "value": user_id}
+    env_by_name["SYNC_CONNECTOR_NAME"] = {
+        "name": "SYNC_CONNECTOR_NAME",
+        "value": connector_name,
+    }
+    env_by_name["SUPABASE_URL"] = {"name": "SUPABASE_URL", "value": SUPABASE_URL}
+    env_by_name["SUPABASE_SERVICE_ROLE_KEY"] = {
+        "name": "SUPABASE_SERVICE_ROLE_KEY",
+        "value": SUPABASE_SERVICE_KEY,
+    }
+    env_by_name["AIRBYTE_ENABLE_UNSAFE_CODE"] = {
+        "name": "AIRBYTE_ENABLE_UNSAFE_CODE",
+        "value": "true",
+    }
+
     container_override = {
         "name": container_name,
-        "env": [
-            {"name": "SYNC_CONFIG_ID", "value": config_id},
-            {"name": "SYNC_USER_ID", "value": user_id},
-            {
-                "name": "SYNC_CONNECTOR_NAME",
-                "value": connector_name,
-            },
-            {"name": "SUPABASE_URL", "value": SUPABASE_URL},
-            {
-                "name": "SUPABASE_SERVICE_ROLE_KEY",
-                "value": SUPABASE_SERVICE_KEY,
-            },
-            {
-                "name": "AIRBYTE_ENABLE_UNSAFE_CODE",
-                "value": "true",
-            },
-        ],
+        "env": list(env_by_name.values()),
     }
     if container_image:
         container_override["image"] = container_image
@@ -199,10 +234,10 @@ def start_container_job(
         return None
 
 
-def mark_running(supabase: Client, config_id: str) -> None:
-    """Mark a config as 'running' to prevent duplicate job starts."""
+def mark_queued(supabase: Client, config_id: str) -> None:
+    """Mark a config as queued once ACA accepts the start request."""
     supabase.table("user_connector_configs").update(
-        {"last_sync_status": "running", "last_sync_error": None}
+        {"last_sync_status": "queued", "last_sync_error": None}
     ).eq("id", config_id).execute()
 
 
@@ -225,11 +260,9 @@ def main(timer: func.TimerRequest) -> None:
     for config in eligible:
         config_id = config["id"]
 
-        # Mark as running BEFORE starting the job to prevent race conditions
-        mark_running(supabase, config_id)
-
         execution_name = start_container_job(config, credential)
         if execution_name:
+            mark_queued(supabase, config_id)
             started += 1
         else:
             # Revert status on failure so it's retried next cycle
