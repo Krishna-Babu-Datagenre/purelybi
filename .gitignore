@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# data
+data
+
+# Virtual environments
+.venv
+.github/workflows/deploy-azure.yml
+.env
+supabase/template_dashboard_scripts/DEMO_WIDGET_GUIDE.md
+
+# temp
+/backend
+/frontend
+/docker-image
+/prototypes
+AGENTS.md
+MULTI_TENANT_TASK_CHECKLIST.md
+.cursor

@@ -28,6 +28,10 @@ ACA_JOB_NAME = os.environ[
     "ACA_JOB_NAME"
 ]  # Name of the Container Apps Job resource
 
+# Must match the container *name* in the Job template (portal often uses the job name).
+# If this does not match, begin_start env overrides are ignored and SYNC_* vars are missing.
+ACA_JOB_CONTAINER_NAME = os.environ.get("ACA_JOB_CONTAINER_NAME", "sync-worker")
+
 
 def get_supabase() -> Client:
     """Create a Supabase client using the service-role key (bypasses RLS)."""
@@ -105,7 +109,7 @@ def start_container_job(
         "template": {
             "containers": [
                 {
-                    "name": "sync-worker",
+                    "name": ACA_JOB_CONTAINER_NAME,
                     "env": [
                         {"name": "SYNC_CONFIG_ID", "value": config_id},
                         {"name": "SYNC_USER_ID", "value": user_id},

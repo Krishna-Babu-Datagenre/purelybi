@@ -7,6 +7,9 @@
 # GitHub:
 #   Secrets:  AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_PUBLISH_PROFILE
 #   Variables: AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_NAME
+#
+# Azure Function App settings must include ACA_JOB_NAME and ACA_JOB_CONTAINER_NAME
+# (container name must match the Job’s container in the portal, or per-run env is ignored).
 
 name: Deploy Azure Function — sync orchestrator
 

@@ -7,6 +7,7 @@
     "SUPABASE_SERVICE_ROLE_KEY": "your-service-role-key",
     "AZURE_SUBSCRIPTION_ID": "your-subscription-id",
     "AZURE_RESOURCE_GROUP": "your-resource-group",
-    "ACA_JOB_NAME": "data-sync-worker"
+    "ACA_JOB_NAME": "caj-your-job-resource-name",
+    "ACA_JOB_CONTAINER_NAME": "sync-worker"
   }
 }
