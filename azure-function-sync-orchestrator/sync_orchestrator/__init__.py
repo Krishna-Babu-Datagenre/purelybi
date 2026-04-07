@@ -132,32 +132,31 @@ def start_container_job(
     connector_name = config["connector_name"]
     config_id = config["id"]
 
-    # The job execution template overrides env vars for this specific run
-    job_execution = {
-        "template": {
-            "containers": [
-                {
-                    "name": container_name,
-                    "env": [
-                        {"name": "SYNC_CONFIG_ID", "value": config_id},
-                        {"name": "SYNC_USER_ID", "value": user_id},
-                        {
-                            "name": "SYNC_CONNECTOR_NAME",
-                            "value": connector_name,
-                        },
-                        {"name": "SUPABASE_URL", "value": SUPABASE_URL},
-                        {
-                            "name": "SUPABASE_SERVICE_ROLE_KEY",
-                            "value": SUPABASE_SERVICE_KEY,
-                        },
-                        {
-                            "name": "AIRBYTE_ENABLE_UNSAFE_CODE",
-                            "value": "true",
-                        },
-                    ],
-                }
-            ]
-        }
+    # begin_start(template=...) expects JobExecutionTemplate shape directly.
+    # If wrapped inside {"template": ...}, SDK serializes unknown fields away.
+    job_execution_template = {
+        "containers": [
+            {
+                "name": container_name,
+                "env": [
+                    {"name": "SYNC_CONFIG_ID", "value": config_id},
+                    {"name": "SYNC_USER_ID", "value": user_id},
+                    {
+                        "name": "SYNC_CONNECTOR_NAME",
+                        "value": connector_name,
+                    },
+                    {"name": "SUPABASE_URL", "value": SUPABASE_URL},
+                    {
+                        "name": "SUPABASE_SERVICE_ROLE_KEY",
+                        "value": SUPABASE_SERVICE_KEY,
+                    },
+                    {
+                        "name": "AIRBYTE_ENABLE_UNSAFE_CODE",
+                        "value": "true",
+                    },
+                ],
+            }
+        ]
     }
 
     try:
@@ -170,7 +169,7 @@ def start_container_job(
         result = client.jobs.begin_start(
             resource_group_name=AZURE_RESOURCE_GROUP,
             job_name=ACA_JOB_NAME,
-            template=job_execution,
+            template=job_execution_template,
         ).result()
 
         execution_name = getattr(result, "name", "unknown")
