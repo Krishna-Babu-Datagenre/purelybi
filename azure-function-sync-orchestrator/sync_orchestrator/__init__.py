@@ -38,6 +38,33 @@ def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
+def resolve_job_container_name(client: ContainerAppsAPIClient) -> str:
+    """Resolve the actual job container name from Azure when possible.
+
+    This avoids mismatches between portal-generated names and local assumptions.
+    """
+    try:
+        job = client.jobs.get(
+            resource_group_name=AZURE_RESOURCE_GROUP,
+            job_name=ACA_JOB_NAME,
+        )
+        containers = ((job.template or {}).get("containers") if isinstance(job, dict) else None)
+        if not containers:
+            # SDK model path
+            containers = getattr(getattr(job, "template", None), "containers", None)
+        if containers:
+            first = containers[0]
+            name = first.get("name") if isinstance(first, dict) else getattr(first, "name", None)
+            if name:
+                return str(name)
+    except Exception:
+        logger.warning(
+            "Could not auto-resolve ACA job container name; using ACA_JOB_CONTAINER_NAME=%s",
+            ACA_JOB_CONTAINER_NAME,
+        )
+    return ACA_JOB_CONTAINER_NAME
+
+
 def get_eligible_configs(supabase: Client) -> list[dict]:
     """Query user_connector_configs for integrations that are due for sync.
 
@@ -99,6 +126,7 @@ def start_container_job(
     Returns the execution name if started, None on failure.
     """
     client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
+    container_name = resolve_job_container_name(client)
 
     user_id = config["user_id"]
     connector_name = config["connector_name"]
@@ -109,7 +137,7 @@ def start_container_job(
         "template": {
             "containers": [
                 {
-                    "name": ACA_JOB_CONTAINER_NAME,
+                    "name": container_name,
                     "env": [
                         {"name": "SYNC_CONFIG_ID", "value": config_id},
                         {"name": "SYNC_USER_ID", "value": user_id},
@@ -133,6 +161,12 @@ def start_container_job(
     }
 
     try:
+        logger.info(
+            "Starting ACA job=%s with container=%s and SYNC_CONFIG_ID=%s",
+            ACA_JOB_NAME,
+            container_name,
+            config_id,
+        )
         result = client.jobs.begin_start(
             resource_group_name=AZURE_RESOURCE_GROUP,
             job_name=ACA_JOB_NAME,
@@ -159,7 +193,7 @@ def start_container_job(
 def mark_running(supabase: Client, config_id: str) -> None:
     """Mark a config as 'running' to prevent duplicate job starts."""
     supabase.table("user_connector_configs").update(
-        {"last_sync_status": "running"}
+        {"last_sync_status": "running", "last_sync_error": None}
     ).eq("id", config_id).execute()
 
 
