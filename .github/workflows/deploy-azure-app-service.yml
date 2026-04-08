@@ -41,15 +41,20 @@ jobs:
       - name: Install dependencies for Azure (site-packages)
         run: uv pip install -r requirements.txt --target .python_packages/lib/site-packages
 
+      # Single folder for upload so the deploy job always gets a predictable path (avoids ./backend missing after artifact extract).
+      - name: Stage deployment package
+        working-directory: ${{ github.workspace }}
+        run: |
+          rm -rf stage-app
+          cp -a backend stage-app
+          rm -rf stage-app/.venv stage-app/venv 2>/dev/null || true
+          rm -f stage-app/.env 2>/dev/null || true
+
       - name: Upload artifact for deployment
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: |
-            backend/
-            !backend/.venv/
-            !backend/venv/
-            !backend/.env
+          path: stage-app
           include-hidden-files: true
 
   deploy:
@@ -68,4 +73,4 @@ jobs:
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: ./backend
+          package: ${{ github.workspace }}/stage-app
