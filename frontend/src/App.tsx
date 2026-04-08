@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import LandingPage from './components/landing/LandingPage';
 import DashboardGrid, { DASHBOARD_GRID_PAD_X } from './layouts/DashboardGrid';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
@@ -37,6 +38,7 @@ const App = () => {
   const showDashboardLoader = dashboardLoading || (!!activeDashboardId && !dashboard);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [authScreen, setAuthScreen] = useState<'landing' | 'login'>('landing');
 
   const topbarSubtitle = useMemo(() => {
     if (navigationPage === 'dashboard' && hasDashboard) return dashboard!.meta.name;
@@ -63,6 +65,7 @@ const App = () => {
   useEffect(() => {
     if (!accessToken) {
       setNavigationPage('home');
+      setAuthScreen('landing');
     }
   }, [accessToken, setNavigationPage]);
 
@@ -87,7 +90,10 @@ const App = () => {
   }
 
   if (!accessToken) {
-    return <LoginPage />;
+    if (authScreen === 'landing') {
+      return <LandingPage onOpenAuth={() => setAuthScreen('login')} />;
+    }
+    return <LoginPage onBackToLanding={() => setAuthScreen('landing')} />;
   }
 
   return (

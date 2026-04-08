@@ -1,9 +1,13 @@
 import { useState, FormEvent } from 'react';
-import { Loader2, Sparkles } from 'lucide-react';
+import { ArrowLeft, Loader2, Sparkles } from 'lucide-react';
 import { useAuthStore } from '../store/useAuthStore';
 import { signIn, signUp } from '../services/authApi';
 
-const LoginPage = () => {
+type LoginPageProps = {
+  onBackToLanding?: () => void;
+};
+
+const LoginPage = ({ onBackToLanding }: LoginPageProps) => {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -54,11 +58,21 @@ const LoginPage = () => {
 
       {/* Card */}
       <div className="login-card">
+        {onBackToLanding && (
+          <button
+            type="button"
+            onClick={onBackToLanding}
+            className="mb-6 flex w-full cursor-pointer items-center justify-center gap-2 border-none bg-transparent text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+          >
+            <ArrowLeft className="h-4 w-4 shrink-0" aria-hidden />
+            Back to Purely BI
+          </button>
+        )}
         <div className="login-brand">
           <div className="login-logo-icon">
             <Sparkles size={18} />
           </div>
-          <span className="login-brand-text">Business Intelligence AI</span>
+          <span className="login-brand-text">Purely BI</span>
         </div>
 
         <h1 className="login-heading">
