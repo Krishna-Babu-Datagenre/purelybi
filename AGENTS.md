@@ -1,0 +1,3 @@
+# Project Context
+Purely BI
+I am building a web application that allows users to easily integrate data from multiple platforms, setup automatic sync and then interact with their data using natural language powered by Generative AI. Once the data has been setup, the users can ask questions about their data, create visuals, build reports (including mixed visuals, KPI blocks, and more), rearrange visuals within a report, and export their reports seamlessly.

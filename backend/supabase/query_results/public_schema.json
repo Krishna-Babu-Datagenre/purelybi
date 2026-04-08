@@ -1,0 +1,695 @@
+[
+  {
+    "table_schema": "public",
+    "table_name": "chat_messages",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_messages",
+    "column_name": "session_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_messages",
+    "column_name": "role",
+    "data_type": "USER-DEFINED",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_messages",
+    "column_name": "content",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_messages",
+    "column_name": "metadata",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_messages",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "user_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "title",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "agent_type",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "llm",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "database",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "chat_sessions",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "docker_repository",
+    "data_type": "text",
+    "constraint_type": "UNIQUE"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "name",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "docker_image_tag",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "icon_url",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "documentation_url",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "config_schema",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "oauth_config",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "is_active",
+    "data_type": "boolean",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "connector_schemas",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "slug",
+    "data_type": "text",
+    "constraint_type": "UNIQUE"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "name",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "description",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "platforms",
+    "data_type": "ARRAY",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "tags",
+    "data_type": "ARRAY",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "preview_image",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "is_active",
+    "data_type": "boolean",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboard_templates",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "user_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "name",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "description",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "tags",
+    "data_type": "ARRAY",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "source",
+    "data_type": "USER-DEFINED",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "template_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "connection_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "dashboards",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "user_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "name",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "platform",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "connection_config",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "status",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "last_synced_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "data_connections",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "email",
+    "data_type": "text",
+    "constraint_type": "UNIQUE"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "full_name",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "avatar_url",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "role",
+    "data_type": "USER-DEFINED",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "profiles",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "user_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "connector_name",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "docker_repository",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "docker_image",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "config",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "oauth_meta",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "selected_streams",
+    "data_type": "ARRAY",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "sync_frequency_minutes",
+    "data_type": "integer",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "is_active",
+    "data_type": "boolean",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "sync_validated",
+    "data_type": "boolean",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "last_sync_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "last_sync_status",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "last_sync_error",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "user_connector_configs",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "template_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "title",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "type",
+    "data_type": "USER-DEFINED",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "layout",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "chart_config",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "data_config",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "sort_order",
+    "data_type": "integer",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widget_templates",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "id",
+    "data_type": "uuid",
+    "constraint_type": "PRIMARY KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "dashboard_id",
+    "data_type": "uuid",
+    "constraint_type": "FOREIGN KEY"
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "title",
+    "data_type": "text",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "type",
+    "data_type": "USER-DEFINED",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "layout",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "chart_config",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "data_config",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "data_snapshot",
+    "data_type": "jsonb",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "data_refreshed_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "sort_order",
+    "data_type": "integer",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  },
+  {
+    "table_schema": "public",
+    "table_name": "widgets",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "constraint_type": null
+  }
+]

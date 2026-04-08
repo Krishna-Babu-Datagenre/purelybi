@@ -6,20 +6,27 @@ dist/
 wheels/
 *.egg-info
 
-# data
-data
-
 # Virtual environments
 .venv
-.github/workflows/deploy-azure.yml
 .env
 supabase/template_dashboard_scripts/DEMO_WIDGET_GUIDE.md
 
+# backend
+
+# frontend
+frontend/node_modules
+frontend/dist
+
 # temp
-/backend
-/frontend
-/docker-image
 /prototypes
-AGENTS.md
 MULTI_TENANT_TASK_CHECKLIST.md
-.cursor
+frontend/ui-inspirations/*
+
+# workspace
+.cursor/*
+.github/skills/*
+
+frontend/.github/*
+backend/.github/*
+frontend/.cursor/*
+backend/.cursor/*

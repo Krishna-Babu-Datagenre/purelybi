@@ -1,0 +1,26 @@
+# Production Sync Worker (Azure Container Apps Job)
+#
+# This is adapted from the prototype's sync_worker.py + Dockerfile.
+# In production, this reads config from Supabase instead of DuckDB
+# and uploads Parquet files to Azure Blob Storage.
+#
+# Build:  docker build -t data-sync-worker -f Dockerfile.worker .
+# Push:   docker push <acr>.azurecr.io/data-sync-worker:latest
+
+FROM python:3.11-bullseye
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Allow connectors that use custom Python code (e.g. source-google-sheets)
+ENV AIRBYTE_ENABLE_UNSAFE_CODE=true
+
+RUN pip install --no-cache-dir airbyte supabase azure-storage-blob requests
+
+COPY sync_worker.py /app/sync_worker.py
+COPY credential_refresh.py /app/credential_refresh.py
+
+ENTRYPOINT ["python", "sync_worker.py"]
