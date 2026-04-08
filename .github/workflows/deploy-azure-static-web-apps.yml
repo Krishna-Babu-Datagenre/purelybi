@@ -1,0 +1,59 @@
+name: Azure Static Web Apps CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-azure-static-web-apps.yml"
+
+jobs:
+  build_and_deploy_job:
+    runs-on: ubuntu-latest
+    name: Build and Deploy Job
+    defaults:
+      run:
+        working-directory: frontend
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install and build
+        run: npm ci && npm run build
+        env:
+          # Baked into the client at build time (see VITE_API_BASE_URL in src/services). Edit if your backend URL changes.
+          VITE_API_BASE_URL: https://app-purelybi-backend-dev-ci.azurewebsites.net
+
+      # Fail fast if Vite did not rewrite the entry (deploying repo-root index.html causes a blank page — browser cannot run /src/main.tsx).
+      - name: Verify production bundle
+        run: |
+          if grep -q 'src/main.tsx' dist/index.html; then
+            echo "::error::dist/index.html still references dev entry (/src/main.tsx). Build output is invalid for deployment."
+            exit 1
+          fi
+          if ! grep -q '/assets/' dist/index.html; then
+            echo "::error::dist/index.html has no /assets/ references — Vite build output looks wrong."
+            exit 1
+          fi
+
+      # With skip_app_build: true, app_location must be the built output folder and output_location must be ''.
+      # See: https://learn.microsoft.com/azure/static-web-apps/build-configuration#skip-building-front-end-app
+      # Path is relative to repo root (skip_app_build deploys this folder as the site root).
+      - name: Deploy to Azure Static Web Apps
+        id: builddeploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: upload
+          app_location: frontend/dist
+          api_location: ""
+          output_location: ""
+          skip_app_build: true
