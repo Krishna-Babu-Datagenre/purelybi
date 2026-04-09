@@ -3,14 +3,52 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from collections import defaultdict
 
 import duckdb
+
+# requests depends on certifi; bundle path is reliable on Azure App Service zip/Oryx
+# where system CA paths may be missing or invisible to DuckDB's default Azure HTTP stack.
+try:
+    import certifi
+except ImportError:  # pragma: no cover
+    certifi = None  # type: ignore[assignment]
 from azure.storage.blob import ContainerClient
 
 logger = logging.getLogger(__name__)
 
 _SAFE_TENANT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _ensure_tls_ca_for_duckdb_azure() -> None:
+    """Point OpenSSL/libcurl at a readable CA bundle (fixes Azure Blob HTTPS in App Service).
+
+    DuckDB's Azure extension may fail with "Problem with the SSL CA cert" when the
+    default transport cannot resolve CA paths. Setting CURL_CA_INFO and using the
+    curl transport honors this on Linux; certifi provides a known-good bundle path.
+    See: https://duckdb.org/docs/stable/core_extensions/azure.html (Configuration)
+    """
+    if os.environ.get("CURL_CA_INFO") or os.environ.get("SSL_CERT_FILE"):
+        return
+    candidates: list[str] = []
+    if certifi is not None:
+        try:
+            candidates.append(certifi.where())
+        except Exception:
+            pass
+    candidates.extend(
+        (
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+        )
+    )
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.R_OK):
+            os.environ["CURL_CA_INFO"] = path
+            os.environ.setdefault("SSL_CERT_FILE", path)
+            os.environ.setdefault("REQUESTS_CA_BUNDLE", path)
+            break
 
 
 def _container_name() -> str:
@@ -132,9 +170,13 @@ def discover_tenant_views(tenant_id: str) -> dict[str, str]:
 
 
 def create_tenant_sandbox(tenant_id: str) -> duckdb.DuckDBPyConnection:
+    _ensure_tls_ca_for_duckdb_azure()
     conn = duckdb.connect(":memory:")
     conn.execute("INSTALL azure; LOAD azure;")
     conn.execute("SET threads=2")
+    # libcurl honors CURL_CA_INFO on Linux; default Azure SDK transport often lacks CA path on App Service.
+    if sys.platform == "linux":
+        conn.execute("SET azure_transport_option_type = 'curl';")
 
     safe_cs = _connection_string().replace("'", "''")
     conn.execute(
