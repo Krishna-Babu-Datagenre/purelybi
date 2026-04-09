@@ -35,6 +35,11 @@ SQL_AGENT_BACKEND: str = _env("SQL_AGENT_BACKEND", "duckdb").lower()
 # --- Observability ---
 LOG_LEVEL: str = _env("LOG_LEVEL", "INFO").upper()
 
+# --- Authentication ---
+# Optional explicit email-confirm redirect target for Supabase Auth sign-up emails.
+# Example: https://<your-frontend-domain>/auth/callback
+AUTH_SIGNUP_EMAIL_REDIRECT_TO: str = _env("AUTH_SIGNUP_EMAIL_REDIRECT_TO")
+
 # --- Guided connector onboarding (Phase 5) ---
 # Public URL of this API — used as OAuth redirect_uri (must match provider app settings).
 API_PUBLIC_BASE_URL: str = _env("API_PUBLIC_BASE_URL", "http://127.0.0.1:8000")

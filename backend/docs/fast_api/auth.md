@@ -98,3 +98,4 @@ Get the current user's profile.
 
 - Store `access_token` in memory (or a short-lived cookie). Use it as `Authorization: Bearer <token>` on all authenticated requests.
 - `role` is either `"client"` or `"admin"`.
+- Sign-up confirmation emails can be forced to a frontend URL by setting `AUTH_SIGNUP_EMAIL_REDIRECT_TO` in backend env. If unset, Supabase Auth project redirect settings are used.

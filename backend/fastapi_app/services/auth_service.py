@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from supabase_auth.errors import AuthApiError
 
 from fastapi_app.models.auth import AuthResponse, UserProfile, UserRole
+from fastapi_app.settings import AUTH_SIGNUP_EMAIL_REDIRECT_TO
 from fastapi_app.utils.supabase_client import (
     get_supabase_admin_client,
     get_supabase_client,
@@ -67,14 +68,15 @@ def sign_up_with_email(
     trigger automatically inserts a profiles row.
     """
     supabase = get_supabase_client()
+    signup_options: dict[str, object] = {"data": {"full_name": full_name}}
+    if AUTH_SIGNUP_EMAIL_REDIRECT_TO:
+        signup_options["email_redirect_to"] = AUTH_SIGNUP_EMAIL_REDIRECT_TO
     try:
         res = supabase.auth.sign_up(
             {
                 "email": email,
                 "password": password,
-                "options": {
-                    "data": {"full_name": full_name},
-                },
+                "options": signup_options,
             }
         )
     except AuthApiError as e:
