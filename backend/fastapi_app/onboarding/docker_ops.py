@@ -8,8 +8,21 @@ import subprocess
 import tempfile
 from typing import Any
 
+from fastapi_app.onboarding.azure_job_runner import run_onboarding_aca_job
+from fastapi_app.settings import ONBOARDING_DOCKER_EXECUTION_MODE
+
+
+def _use_azure_job_mode() -> bool:
+    return ONBOARDING_DOCKER_EXECUTION_MODE == "azure_job"
+
 
 def docker_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bool, str]:
+    if _use_azure_job_mode():
+        return run_onboarding_aca_job(
+            action="check",
+            docker_image=docker_image,
+            config=config,
+        )
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -62,6 +75,15 @@ def docker_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[
 def docker_discover_streams(
     docker_image: str, config: dict[str, Any]
 ) -> tuple[bool, list[str], str]:
+    if _use_azure_job_mode():
+        ok, msg = run_onboarding_aca_job(
+            action="discover",
+            docker_image=docker_image,
+            config=config,
+        )
+        # In azure_job mode, stream names are expected to be persisted/reported by the
+        # dedicated onboarding worker. For now we only surface execution-level success.
+        return ok, [], msg
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -125,6 +147,13 @@ def _clean_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 def docker_discover_catalog(
     docker_image: str, config: dict[str, Any]
 ) -> tuple[bool, dict[str, Any] | None, str]:
+    if _use_azure_job_mode():
+        ok, msg = run_onboarding_aca_job(
+            action="discover_catalog",
+            docker_image=docker_image,
+            config=config,
+        )
+        return ok, None, msg
     """Run ``discover`` and return the Airbyte ``catalog`` dict from the first CATALOG message."""
     clean = _clean_connector_config(config)
 
@@ -256,6 +285,17 @@ def docker_read_probe(
     Returns ``(success, record_count, message, stderr_tail)``.
     Success means the connector process exited 0 and no ERROR line (or LOG level ERROR) was parsed.
     """
+    if _use_azure_job_mode():
+        ok, msg = run_onboarding_aca_job(
+            action="read_probe",
+            docker_image=docker_image,
+            config=config,
+            streams=stream_names,
+            max_streams=max_streams,
+            read_timeout=read_timeout,
+        )
+        return ok, 0, msg, ""
+
     ok, catalog, dmsg = docker_discover_catalog(docker_image, config)
     if not ok or not catalog:
         return False, 0, dmsg, ""

@@ -48,6 +48,32 @@ ONBOARDING_DOCKER_ENABLED: bool = _env("ONBOARDING_DOCKER_ENABLED", "0").lower()
     "true",
     "yes",
 )
+# Execution backend for onboarding connector checks:
+# - "local": run docker CLI in-process (dev machine)
+# - "azure_job": trigger dedicated Azure Container Apps Job and wait for completion
+ONBOARDING_DOCKER_EXECUTION_MODE: str = _env(
+    "ONBOARDING_DOCKER_EXECUTION_MODE", "local"
+).lower()
+# Azure job settings used when ONBOARDING_DOCKER_EXECUTION_MODE=azure_job
+ONBOARDING_ACA_SUBSCRIPTION_ID: str = _env(
+    "ONBOARDING_ACA_SUBSCRIPTION_ID",
+    _env("AZURE_SUBSCRIPTION_ID"),
+)
+ONBOARDING_ACA_RESOURCE_GROUP: str = _env(
+    "ONBOARDING_ACA_RESOURCE_GROUP",
+    _env("AZURE_RESOURCE_GROUP"),
+)
+ONBOARDING_ACA_JOB_NAME: str = _env("ONBOARDING_ACA_JOB_NAME", _env("ACA_JOB_NAME"))
+ONBOARDING_ACA_JOB_CONTAINER_NAME: str = _env(
+    "ONBOARDING_ACA_JOB_CONTAINER_NAME",
+    _env("ACA_JOB_CONTAINER_NAME", "sync-worker"),
+)
+ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS: int = int(
+    _env("ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS", "420") or "420"
+)
+ONBOARDING_ACA_POLL_INTERVAL_SECONDS: int = int(
+    _env("ONBOARDING_ACA_POLL_INTERVAL_SECONDS", "5") or "5"
+)
 # `run_sync` Docker read probe: timeout (seconds) and max streams to include in configured catalog.
 ONBOARDING_DOCKER_READ_TIMEOUT: int = int(_env("ONBOARDING_DOCKER_READ_TIMEOUT", "300") or "300")
 ONBOARDING_DOCKER_READ_STREAM_CAP: int = int(_env("ONBOARDING_DOCKER_READ_STREAM_CAP", "3") or "3")
