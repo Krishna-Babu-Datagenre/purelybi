@@ -114,12 +114,22 @@ class OnboardingChatRequest(BaseModel):
     )
 
 
-def _message_from_form_fields(rows: list[FormFieldValue]) -> str:
+def _message_from_form_fields(
+    rows: list[FormFieldValue],
+    *,
+    user_id: str,
+    thread_id: str,
+) -> str:
     agent_values: dict[str, object] = {}
     for row in rows:
         k = row.key
         if row.type == "password" and row.value not in (None, ""):
-            agent_values[k] = onboarding_stores.store_secret(k, str(row.value))
+            agent_values[k] = onboarding_stores.store_secret(
+                k,
+                str(row.value),
+                user_id=user_id,
+                thread_id=thread_id,
+            )
         else:
             agent_values[k] = row.value
     return (
@@ -183,7 +193,11 @@ async def onboarding_chat(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="form_fields must not be empty when provided.",
                 )
-            text = _message_from_form_fields(body.form_fields)
+            text = _message_from_form_fields(
+                body.form_fields,
+                user_id=user.id,
+                thread_id=tid,
+            )
         elif body.auth_choice is not None:
             ac = body.auth_choice
             label = (
@@ -299,7 +313,12 @@ async def onboarding_oauth_callback(
         client_secret=row["client_secret"],
         shop=row.get("shop"),
     )
-    onboarding_stores.set_tool_kv("oauth_meta", oauth_meta)
+    onboarding_stores.set_tool_kv(
+        "oauth_meta",
+        oauth_meta,
+        user_id=str(row["user_id"]),
+        thread_id=str(row["thread_id"]),
+    )
 
     agent_message = (
         "OAuth authorization succeeded.\n\n"

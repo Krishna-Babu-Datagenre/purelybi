@@ -209,7 +209,7 @@ async def stream_onboarding(
                 )
                 await asyncio.sleep(0.01)
 
-                ui = peek_pending_ui()
+                ui = peek_pending_ui(user_id=ctx.user_id, thread_id=ctx.thread_id)
                 if ui and (
                     tool_name in UI_TOOL_NAMES
                     or ui.get("type")
@@ -224,7 +224,7 @@ async def stream_onboarding(
                     await asyncio.sleep(0.02)
                     yield _sse("ui_block", {"ui": ui})
                     await asyncio.sleep(0.01)
-                    clear_pending_ui()
+                    clear_pending_ui(user_id=ctx.user_id, thread_id=ctx.thread_id)
 
             await asyncio.sleep(0.01)
 

@@ -1,4 +1,4 @@
-"""Module-level stores for UI specs and OAuth hand-off (mirrors Streamlit prototype)."""
+"""Per-session stores for onboarding UI payloads, OAuth hand-off, and secret refs."""
 
 from __future__ import annotations
 
@@ -6,74 +6,136 @@ import threading
 import time
 from typing import Any
 
-_tool_store: dict[str, Any] = {
-    "pending_ui": None,
-    "oauth_client_id": None,
-    "oauth_client_secret": None,
-    "oauth_docker_repo": None,
-    "oauth_shop": None,
-    "oauth_meta": None,
-    "oauth_state": None,
-    "oauth_thread_id": None,
-}
+from fastapi_app.onboarding.context import get_onboarding_context
 
 _lock = threading.Lock()
 
+# session_key (user_id:thread_id) -> tool_kv dict (pending_ui, oauth_meta, oauth client fields, …)
+_session_tool_stores: dict[str, dict[str, Any]] = {}
+
 SECRET_REF_PREFIX = "__SECRET_REF__:"
-_secret_store: dict[str, str] = {}
+# session_key -> field_key -> secret value
+_secret_store: dict[str, dict[str, str]] = {}
 
 
-def drain_tool_store() -> dict[str, Any]:
-    """Return a copy of stored values and reset keys to None."""
+def _session_key(user_id: str, thread_id: str) -> str:
+    return f"{user_id}:{thread_id}"
+
+
+def _resolve_session(
+    *,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+) -> tuple[str, str] | None:
+    """Return (user_id, thread_id) from args or active onboarding context."""
+    ctx = get_onboarding_context()
+    uid = user_id or (ctx.user_id if ctx else None)
+    tid = thread_id or (ctx.thread_id if ctx else None)
+    if uid is None or tid is None:
+        return None
+    return (uid, tid)
+
+
+def peek_pending_ui(*, user_id: str, thread_id: str) -> dict[str, Any] | None:
+    sk = _session_key(user_id, thread_id)
     with _lock:
-        snapshot = dict(_tool_store)
-        for k in _tool_store:
-            _tool_store[k] = None
-        return snapshot
-
-
-def peek_pending_ui() -> dict[str, Any] | None:
-    with _lock:
-        ui = _tool_store.get("pending_ui")
+        ui = _session_tool_stores.get(sk, {}).get("pending_ui")
         return ui if isinstance(ui, dict) else None
 
 
-def clear_pending_ui() -> None:
+def clear_pending_ui(*, user_id: str, thread_id: str) -> None:
+    sk = _session_key(user_id, thread_id)
     with _lock:
-        _tool_store["pending_ui"] = None
+        bucket = _session_tool_stores.get(sk)
+        if bucket is not None:
+            bucket["pending_ui"] = None
 
 
-def store_secret(key: str, value: str) -> str:
+def store_secret(
+    key: str,
+    value: str,
+    *,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+) -> str:
+    """Store a password field value; returned token is safe to pass through the LLM."""
+    resolved = _resolve_session(user_id=user_id, thread_id=thread_id)
+    if resolved is None:
+        raise ValueError(
+            "store_secret requires user_id/thread_id or active onboarding context",
+        )
+    uid, tid = resolved
+    sk = _session_key(uid, tid)
     with _lock:
-        _secret_store[key] = value
+        if sk not in _secret_store:
+            _secret_store[sk] = {}
+        _secret_store[sk][key] = value
     return f"{SECRET_REF_PREFIX}{key}"
 
 
 def resolve_secrets(obj: Any) -> Any:
-    if isinstance(obj, str) and obj.startswith(SECRET_REF_PREFIX):
-        secret_key = obj[len(SECRET_REF_PREFIX) :]
-        with _lock:
-            return _secret_store.get(secret_key, obj)
-    if isinstance(obj, dict):
-        return {k: resolve_secrets(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [resolve_secrets(item) for item in obj]
-    return obj
+    """Replace secret ref strings using the current onboarding context session."""
+
+    ctx = get_onboarding_context()
+    sk = _session_key(ctx.user_id, ctx.thread_id) if ctx else None
+
+    def walk(o: Any) -> Any:
+        if isinstance(o, str) and o.startswith(SECRET_REF_PREFIX):
+            if not sk:
+                return o
+            secret_key = o[len(SECRET_REF_PREFIX) :]
+            with _lock:
+                return _secret_store.get(sk, {}).get(secret_key, o)
+        if isinstance(o, dict):
+            return {k: walk(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [walk(item) for item in o]
+        return o
+
+    return walk(obj)
 
 
-def clear_secrets() -> None:
+def clear_secrets_for_session(user_id: str, thread_id: str) -> None:
+    """Remove secret values for one onboarding session (e.g. after save)."""
+    sk = _session_key(user_id, thread_id)
     with _lock:
-        _secret_store.clear()
+        _secret_store.pop(sk, None)
 
 
-def set_tool_kv(key: str, value: Any) -> None:
+def set_tool_kv(
+    key: str,
+    value: Any,
+    *,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+) -> None:
+    """Set a session-scoped tool store value (OAuth client id, pending_ui, oauth_meta, …)."""
+    resolved = _resolve_session(user_id=user_id, thread_id=thread_id)
+    if resolved is None:
+        raise ValueError(
+            "set_tool_kv requires user_id/thread_id or active onboarding context",
+        )
+    uid, tid = resolved
+    sk = _session_key(uid, tid)
     with _lock:
-        _tool_store[key] = value
+        if sk not in _session_tool_stores:
+            _session_tool_stores[sk] = {}
+        _session_tool_stores[sk][key] = value
 
 
-def get_tool_kv(key: str) -> Any:
+def get_tool_kv(
+    key: str,
+    *,
+    user_id: str | None = None,
+    thread_id: str | None = None,
+) -> Any:
+    resolved = _resolve_session(user_id=user_id, thread_id=thread_id)
+    if resolved is None:
+        return None
+    uid, tid = resolved
+    sk = _session_key(uid, tid)
     with _lock:
-        return _tool_store.get(key)
+        return _session_tool_stores.get(sk, {}).get(key)
 
 
 # --- OAuth pending state (CSRF + token exchange hand-off) ---
