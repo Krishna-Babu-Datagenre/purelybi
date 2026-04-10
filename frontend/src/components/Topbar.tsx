@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { LayoutDashboard, LogOut } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { LayoutDashboard, LogOut, UserX } from 'lucide-react';
 import { useChatStore } from '../store/useChatStore';
 import { useAuthStore } from '../store/useAuthStore';
+import { deleteAccount } from '../services/authApi';
 
 interface TopbarProps {
   sidebarCollapsed: boolean;
@@ -14,9 +16,12 @@ const Topbar = ({ sidebarCollapsed, title, subtitle }: TopbarProps) => {
   const toggleChat = useChatStore((s) => s.toggleChat);
   const isChatOpen = useChatStore((s) => s.isOpen);
   const user = useAuthStore((s) => s.user);
+  const accessToken = useAuthStore((s) => s.accessToken);
   const logout = useAuthStore((s) => s.logout);
   const displayName = user?.full_name || user?.email || 'User';
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteInProgress, setDeleteInProgress] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,6 +34,15 @@ const Topbar = ({ sidebarCollapsed, title, subtitle }: TopbarProps) => {
     document.addEventListener('mousedown', handle);
     return () => document.removeEventListener('mousedown', handle);
   }, [userMenuOpen]);
+
+  useEffect(() => {
+    if (!deleteDialogOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDeleteDialogOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [deleteDialogOpen]);
 
   return (
     <div className="topbar" style={{ left: leftOffset }}>
@@ -100,10 +114,80 @@ const Topbar = ({ sidebarCollapsed, title, subtitle }: TopbarProps) => {
                 <LogOut size={16} strokeWidth={2} />
                 <span>Sign out</span>
               </button>
+              <button
+                type="button"
+                className="topbar-user-menu__item topbar-user-menu__item--danger"
+                role="menuitem"
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  setDeleteDialogOpen(true);
+                }}
+              >
+                <UserX size={16} strokeWidth={2} />
+                <span>Delete account</span>
+              </button>
             </div>
           )}
         </div>
       </div>
+
+      {deleteDialogOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/55 backdrop-blur-[2px]"
+            role="presentation"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setDeleteDialogOpen(false);
+            }}
+          >
+            <div
+              className="w-full max-w-md rounded-xl border border-red-500/25 bg-[#14141f] p-5 shadow-2xl shadow-black/50"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-account-title"
+              aria-describedby="delete-account-desc"
+            >
+              <h2 id="delete-account-title" className="text-base font-semibold text-[var(--text-primary)]">
+                Delete your account?
+              </h2>
+              <p id="delete-account-desc" className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
+                This permanently removes your account, profile, and associated workspace data. This cannot be undone.
+              </p>
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-white/10 bg-transparent px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-white/5 hover:text-[var(--text-primary)]"
+                  onClick={() => setDeleteDialogOpen(false)}
+                  disabled={deleteInProgress}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                  disabled={deleteInProgress || !accessToken}
+                  onClick={async () => {
+                    if (!accessToken) return;
+                    setDeleteInProgress(true);
+                    try {
+                      await deleteAccount(accessToken);
+                      setDeleteDialogOpen(false);
+                      logout();
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : 'Could not delete account';
+                      window.alert(msg);
+                    } finally {
+                      setDeleteInProgress(false);
+                    }
+                  }}
+                >
+                  {deleteInProgress ? 'Deleting…' : 'Delete permanently'}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };

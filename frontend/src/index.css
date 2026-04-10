@@ -386,6 +386,21 @@ body {
   color: var(--text-primary);
 }
 
+.topbar-user-menu__item--danger {
+  color: rgba(248, 113, 113, 0.95);
+}
+
+.topbar-user-menu__item--danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: rgb(252, 165, 165);
+}
+
+.topbar-user-menu__item--danger:focus-visible {
+  outline: none;
+  background: rgba(239, 68, 68, 0.15);
+  color: rgb(252, 165, 165);
+}
+
 /* ─────────────────────────────────────────────
    Widget Card
 ───────────────────────────────────────────── */

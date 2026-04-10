@@ -8,6 +8,7 @@ POST /api/auth/signin          – login with email + password
 POST /api/auth/refresh         – rotate access token using refresh token
 GET  /api/auth/google          – get Google OAuth redirect URL
 GET  /api/auth/me              – get current user profile from token
+DELETE /api/auth/account       – permanently delete the current user (auth + profile)
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from fastapi_app.models.auth import (
 )
 from fastapi_app.services.auth_service import (
     EmailConfirmationRequired,
+    delete_user_account,
     get_current_user,
     get_google_oauth_url,
     refresh_with_refresh_token,
@@ -80,3 +82,9 @@ async def me(authorization: str = Header(...)):
     Expects ``Authorization: Bearer <access_token>`` header.
     """
     return get_current_user(access_token=parse_bearer_token(authorization))
+
+
+@router.delete("/account", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account(authorization: str = Header(...)):
+    """Permanently delete the current user from Supabase Auth and related rows."""
+    delete_user_account(access_token=parse_bearer_token(authorization))

@@ -265,3 +265,41 @@ def get_current_user(access_token: str) -> UserProfile:
         user=user.__dict__ if hasattr(user, "__dict__") else dict(user),
         profile_row=profile_row,
     )
+
+
+# ---------------------------------------------------------------------------
+# Delete account (auth user + cascaded public data)
+# ---------------------------------------------------------------------------
+
+
+def delete_user_account(access_token: str) -> None:
+    """Permanently delete the authenticated user from Supabase Auth.
+
+    The ``profiles`` row and other ``public`` tables referencing ``auth.users``
+    with ``ON DELETE CASCADE`` are removed automatically by PostgreSQL.
+    """
+    supabase = get_supabase_client()
+    try:
+        res = supabase.auth.get_user(access_token)
+    except AuthApiError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+
+    user = res.user
+    user_id = getattr(user, "id", None)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid session",
+        )
+
+    admin = get_supabase_admin_client()
+    try:
+        admin.auth.admin.delete_user(str(user_id), should_soft_delete=False)
+    except AuthApiError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not delete account: {e}",
+        )

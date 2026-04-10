@@ -85,3 +85,18 @@ export function refreshTokens(refreshToken: string): Promise<AuthResponse> {
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
 }
+
+/** DELETE /api/auth/account — permanently remove the user from Auth and profiles */
+export async function deleteAccount(accessToken: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/auth/account`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+    const detail = body.detail;
+    throw new Error(
+      typeof detail === 'string' ? detail : `Request failed: ${res.status} ${res.statusText}`,
+    );
+  }
+}
