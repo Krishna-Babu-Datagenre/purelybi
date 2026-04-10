@@ -8,6 +8,12 @@ Environment variables (set by the sync_orchestrator Azure Function):
     SYNC_CONFIG_ID            — UUID of the user_connector_configs row
     SYNC_USER_ID              — UUID of the user
     SYNC_CONNECTOR_NAME       — Display name of the connector
+
+Onboarding probe (set by FastAPI when ``ONBOARDING_DOCKER_EXECUTION_MODE=azure_job``):
+    ONBOARDING_JOB_MODE           — ``onboarding_connector_probe`` to run connector check/discover/read via PyAirbyte
+    ONBOARDING_JOB_PAYLOAD_JSON   — JSON with action, docker_image, config, optional streams / max_streams / read_timeout
+
+Shared (job template secrets):
     SUPABASE_URL              — Supabase project URL
     SUPABASE_SERVICE_ROLE_KEY — Service role key (bypasses RLS)
     AZURE_STORAGE_CONNECTION_STRING — Blob Storage connection string
@@ -274,7 +280,145 @@ def _mark_failed(config_id: str, message: str) -> None:
         print(f"WARNING: Could not persist failed status: {exc}")
 
 
+def _pick_streams_for_probe(
+    catalog: dict,
+    requested: list | None,
+    *,
+    max_streams: int,
+) -> list[str]:
+    """Match backend ``docker_ops._pick_streams_for_probe`` (subset + cap)."""
+    all_names: list[str] = []
+    for stream_obj in catalog.get("streams", []) or []:
+        if not isinstance(stream_obj, dict):
+            continue
+        name = stream_obj.get("name")
+        if name:
+            all_names.append(str(name))
+    if not all_names:
+        return []
+    if not requested:
+        return all_names[:max_streams]
+    by_lower = {n.lower(): n for n in all_names}
+    picked: list[str] = []
+    for req in requested:
+        r = str(req).strip()
+        if not r:
+            continue
+        if r in all_names:
+            picked.append(r)
+        elif r.lower() in by_lower:
+            picked.append(by_lower[r.lower()])
+    if not picked:
+        return all_names[:max_streams]
+    return picked[:max_streams]
+
+
+def run_onboarding_connector_probe(payload: dict) -> None:
+    """Run check/discover/read steps for guided onboarding (PyAirbyte; no Docker CLI).
+
+    Env: ``ONBOARDING_JOB_PAYLOAD_JSON`` from ``azure_job_runner.run_onboarding_aca_job``.
+    """
+    action = str(payload.get("action") or "check")
+    docker_image = str(payload.get("docker_image") or "")
+    raw_config = payload.get("config")
+    if not isinstance(raw_config, dict):
+        print("ERROR: payload.config must be an object")
+        sys.exit(1)
+    if not docker_image:
+        print("ERROR: payload.docker_image is required")
+        sys.exit(1)
+
+    streams_req = payload.get("streams")
+    if streams_req is not None and not isinstance(streams_req, list):
+        streams_req = None
+
+    max_streams = int(payload.get("max_streams") or 3)
+    read_timeout = int(payload.get("read_timeout") or 300)
+
+    raw_config = dict(raw_config)
+    oauth_meta = raw_config.get("__oauth_meta__") or {}
+
+    if oauth_meta:
+        print("[onboarding] Checking OAuth token freshness...")
+        try:
+            raw_config, _was = ensure_fresh_credentials(raw_config, oauth_meta)
+        except ReauthRequired as e:
+            print(f"ERROR: {e}")
+            sys.exit(2)
+        except TokenRefreshError as e:
+            print(f"WARNING: Token refresh failed: {e}")
+
+    user_config = clean_config(raw_config)
+    source_name = extract_source_name(docker_image)
+    print(f"[onboarding] action={action} source={source_name} image={docker_image}")
+
+    source = ab.get_source(source_name, config=user_config)
+
+    if action == "check":
+        source.check()
+        print("Onboarding connection check: succeeded.")
+        return
+
+    if action == "discover":
+        source.check()
+        names = [str(x) for x in source.get_available_streams()]
+        print(f"Onboarding discover: {len(names)} stream(s).")
+        return
+
+    if action == "discover_catalog":
+        source.check()
+        names = [str(x) for x in source.get_available_streams()]
+        catalog = {"streams": [{"name": n, "supported_sync_modes": ["full_refresh"]} for n in names]}
+        print(f"Onboarding discover_catalog: {len(catalog['streams'])} stream(s).")
+        return
+
+    if action == "read_probe":
+        source.check()
+        available = [str(x) for x in source.get_available_streams()]
+        catalog = {
+            "streams": [
+                {"name": n, "supported_sync_modes": ["full_refresh"]} for n in available
+            ]
+        }
+        picked = _pick_streams_for_probe(
+            catalog, streams_req, max_streams=max_streams
+        )
+        if not picked:
+            print("ERROR: No streams available for test read.")
+            sys.exit(1)
+        source.select_streams(picked)
+        print(f"[onboarding] read_probe streams={picked!r} (timeout={read_timeout}s)")
+        cache = ab.get_default_cache()
+        source.read(cache=cache)
+        print("Onboarding read probe: succeeded.")
+        return
+
+    print(f"ERROR: Unknown onboarding action: {action}")
+    sys.exit(1)
+
+
 if __name__ == "__main__":
+    if os.environ.get("ONBOARDING_JOB_MODE") == "onboarding_connector_probe":
+        raw = os.environ.get("ONBOARDING_JOB_PAYLOAD_JSON")
+        if not raw:
+            print(
+                "ERROR: ONBOARDING_JOB_PAYLOAD_JSON is required when "
+                "ONBOARDING_JOB_MODE=onboarding_connector_probe"
+            )
+            sys.exit(1)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Invalid ONBOARDING_JOB_PAYLOAD_JSON: {e}")
+            sys.exit(1)
+        try:
+            run_onboarding_connector_probe(payload)
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            print(f"ERROR: {err}")
+            sys.exit(1)
+        sys.exit(0)
+
     config_id = os.environ.get("SYNC_CONFIG_ID")
     if not config_id:
         print("ERROR: SYNC_CONFIG_ID environment variable is required")

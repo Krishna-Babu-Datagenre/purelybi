@@ -121,18 +121,28 @@ def _resolve_job_base_env(client: Any) -> tuple[str, str | None, list[dict[str, 
 
 
 def _get_execution(client: Any, execution_name: str) -> Any:
-    # SDK naming can vary across versions (job_execution vs job_executions).
-    getter = getattr(getattr(client, "job_execution", None), "get", None)
-    if getter is None:
-        getter = getattr(getattr(client, "job_executions", None), "get", None)
-    if getter is None:
-        raise RuntimeError(
-            "Container Apps SDK missing job execution getter (expected job_execution.get or job_executions.get)."
+    # azure-mgmt-appcontainers 3.x exposes GET execution as a method on the client
+    # (`ContainerAppsAPIClient.job_execution`, not `client.job_execution.get`).
+    job_exec_fn = getattr(client, "job_execution", None)
+    if callable(job_exec_fn):
+        return job_exec_fn(
+            resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
+            job_name=ONBOARDING_ACA_JOB_NAME,
+            job_execution_name=execution_name,
         )
-    return getter(
-        resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
-        job_name=ONBOARDING_ACA_JOB_NAME,
-        job_execution_name=execution_name,
+    # Older SDKs: operations object with .get (names vary).
+    for attr in ("job_executions", "jobs_executions"):
+        ops = getattr(client, attr, None)
+        getter = getattr(ops, "get", None) if ops is not None else None
+        if callable(getter):
+            return getter(
+                resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
+                job_name=ONBOARDING_ACA_JOB_NAME,
+                job_execution_name=execution_name,
+            )
+    raise RuntimeError(
+        "Container Apps SDK has no supported job execution getter "
+        "(expected client.job_execution(...) or jobs_executions/job_executions.get)."
     )
 
 
