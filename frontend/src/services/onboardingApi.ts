@@ -44,6 +44,31 @@ export function normalizeAuthOptionsPayload(options: unknown): AuthOptionNormali
   });
 }
 
+/** One select option after normalization (avoids rendering raw `{ value, label }` objects as React children). */
+export type SelectOptionNormalized = { value: string; label: string };
+
+/**
+ * Coerce agent/LLM select options into `{ value, label }` (strings, `{ value, label }`, or similar).
+ */
+export function normalizeSelectOptions(raw: unknown): SelectOptionNormalized[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item, i) => {
+    if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean') {
+      const s = String(item);
+      return { value: s, label: s };
+    }
+    if (item && typeof item === 'object') {
+      const r = item as Record<string, unknown>;
+      const value =
+        pickFirstNonEmpty(r.value, r.id, r.key, r.name) || `option_${i + 1}`;
+      const label =
+        pickFirstNonEmpty(r.label, r.title, r.name, r.value, value) || value;
+      return { value, label };
+    }
+    return { value: `option_${i + 1}`, label: String(item) };
+  });
+}
+
 /** Field row after normalization (always has non-empty ``key`` for API payloads). */
 export type InputFieldNormalized = {
   key: string;
@@ -53,7 +78,7 @@ export type InputFieldNormalized = {
   description?: string;
   default?: unknown;
   placeholder?: string;
-  options?: string[];
+  options?: SelectOptionNormalized[];
 };
 
 /**
@@ -64,6 +89,7 @@ export function normalizeInputFieldsPayload(fields: unknown): InputFieldNormaliz
   if (!Array.isArray(fields)) return [];
   return fields.map((raw, i) => {
     const rec = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+    const { options: rawOptions, ...recRest } = rec;
     const direct = pickFirstNonEmpty(
       rec.key,
       rec.name,
@@ -81,11 +107,17 @@ export function normalizeInputFieldsPayload(fields: unknown): InputFieldNormaliz
       : '';
     const key = direct || slugFromLabel || `field_${i + 1}`;
     const label = pickFirstNonEmpty(rec.label, rec.title, rec.name, key) || undefined;
+    const ftype = pickFirstNonEmpty(rec.type) || 'text';
+    const normalizedSelectOptions =
+      ftype === 'select' ? normalizeSelectOptions(rawOptions) : undefined;
     return {
-      ...rec,
+      ...recRest,
       key,
       ...(label ? { label } : {}),
-      type: pickFirstNonEmpty(rec.type) || 'text',
+      type: ftype,
+      ...(ftype === 'select' && normalizedSelectOptions && normalizedSelectOptions.length > 0
+        ? { options: normalizedSelectOptions }
+        : {}),
     } as InputFieldNormalized;
   });
 }
@@ -103,7 +135,7 @@ export type OnboardingUiBlock =
         description?: string;
         default?: unknown;
         placeholder?: string;
-        options?: string[];
+        options?: SelectOptionNormalized[];
       }[];
     }
   | {

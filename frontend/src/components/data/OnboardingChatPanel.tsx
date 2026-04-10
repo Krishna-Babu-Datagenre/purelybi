@@ -7,6 +7,15 @@ import {
   streamOnboardingChat,
   type OnboardingUiBlock,
 } from '../../services/onboardingApi';
+
+/** Default value for `<select>` when agent sends string or `{ value, label }`. */
+function selectDefaultString(def: unknown): string {
+  if (def == null) return '';
+  if (typeof def === 'object' && def !== null && 'value' in def) {
+    return String((def as { value: unknown }).value ?? '');
+  }
+  return String(def);
+}
 import { friendlyToolLabel, normalizeTokenContent } from './onboardingToolLabels';
 import MarkdownMessage from './MarkdownMessage';
 
@@ -519,10 +528,15 @@ export default function OnboardingChatPanel({
                   <label htmlFor={id} className="block text-xs font-medium text-[var(--text-secondary)] mb-1">
                     {label}
                   </label>
-                  <select id={id} name={`f_${f.key}`} className={common} defaultValue={String(f.default ?? '')}>
-                    {f.options.map((o) => (
-                      <option key={o} value={o}>
-                        {o}
+                  <select
+                    id={id}
+                    name={`f_${f.key}`}
+                    className={common}
+                    defaultValue={selectDefaultString(f.default)}
+                  >
+                    {f.options.map((o, i) => (
+                      <option key={`${o.value}-${i}`} value={o.value}>
+                        {o.label}
                       </option>
                     ))}
                   </select>
