@@ -59,6 +59,7 @@ const baseComponents = {
       {children}
     </blockquote>
   ),
+  hr: () => <hr className="my-4 border-0 border-t border-[var(--border-subtle)]/80" />,
 };
 
 interface MarkdownMessageProps {

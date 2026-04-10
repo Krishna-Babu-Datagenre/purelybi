@@ -115,7 +115,7 @@ async def stream_onboarding(
     agent = get_or_create_onboarding_agent(ctx.user_id, ctx.thread_id)
     config = {
         "configurable": {"thread_id": thread_id_for_graph(ctx)},
-        "recursion_limit": 15,
+        "recursion_limit": 50,
     }
 
     yield _sse("start", {"status": "streaming"})

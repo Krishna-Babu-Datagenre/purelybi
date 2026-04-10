@@ -1,24 +1,33 @@
-/** User-facing copy for onboarding agent tool names (matches backend tool ids). */
+/**
+ * User-facing copy for onboarding agent tool names.
+ * Keys must match `@tool` function names in `backend/fastapi_app/onboarding/tools.py`.
+ */
+const TOOL_LABELS: Record<string, string> = {
+  get_connector_spec: 'Loading connector details from the catalog',
+  render_auth_options: 'Preparing how you will sign in',
+  render_input_fields: 'Preparing the configuration form',
+  render_stream_selector: 'Preparing stream selection',
+  start_oauth_flow: 'Starting OAuth with your provider',
+  test_connection: 'Verifying the connection',
+  discover_streams: 'Discovering available data streams',
+  run_sync: 'Running a validation sync',
+  save_config: 'Saving your connection',
+};
+
+function titleCaseFromSnake(name: string): string {
+  return name
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
 
 export function friendlyToolLabel(toolName: string | undefined | null): string {
   if (toolName == null || String(toolName).trim() === '') {
     return 'Working…';
   }
-  const map: Record<string, string> = {
-    get_connector_spec: 'Reading connector settings from the catalog',
-    render_auth_options: 'Preparing authentication choices',
-    render_input_fields: 'Preparing a configuration form',
-    render_stream_selector: 'Preparing stream selection',
-    start_oauth_flow: 'Opening OAuth sign-in',
-    test_connection: 'Validating your connection',
-    discover_streams: 'Listing available data streams',
-    run_sync: 'Running test sync (validation)',
-    save_config: 'Saving your connection',
-  };
-  return (
-    map[toolName] ??
-    String(toolName).replace(/^([a-z])/, (_, c) => c.toUpperCase()).replace(/_/g, ' ')
-  );
+  const key = String(toolName).trim();
+  return TOOL_LABELS[key] ?? titleCaseFromSnake(key);
 }
 
 /** Turn streamed token payloads into plain text (handles structured provider chunks). */

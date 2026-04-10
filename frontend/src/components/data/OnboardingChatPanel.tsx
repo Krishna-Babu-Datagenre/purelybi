@@ -58,8 +58,8 @@ function StreamSkeleton() {
 }
 
 /**
- * Single status area: current step + nested completed steps + live reply text.
- * Matches where “Assistant is responding” lived — one container for all agent activity.
+ * Live reply streams first; status and tool steps sit in a sticky strip at the bottom of the
+ * scroll container so auto-scroll to follow tokens does not push activity out of view.
  */
 function AssistantStatusBlock({
   awaitingFirstEvent,
@@ -80,9 +80,9 @@ function AssistantStatusBlock({
   if (currentRunning) {
     statusLine = friendlyToolLabel(currentRunning.toolName);
   } else if (streamingText) {
-    statusLine = 'Writing reply…';
+    statusLine = 'Composing reply…';
   } else if (streamBusy && !awaitingFirstEvent) {
-    statusLine = 'Assistant is responding…';
+    statusLine = 'Thinking…';
   }
 
   const showCard =
@@ -93,44 +93,52 @@ function AssistantStatusBlock({
 
   if (!showCard) return null;
 
+  const hasStream = streamingText.length > 0;
+
   return (
-    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-3 space-y-2">
-      {awaitingFirstEvent && streamBusy && <StreamSkeleton />}
-
-      {!awaitingFirstEvent && (statusLine || (streamBusy && !streamingText)) && (
-        <div className="flex items-start gap-2 text-sm text-[var(--text-primary)]">
-          {(currentRunning || streamBusy) && (
-            <Loader2 size={16} className="animate-spin text-[var(--brand)] shrink-0 mt-0.5" aria-hidden />
-          )}
-          <span className="leading-snug">
-            {statusLine ?? (streamBusy ? 'Working…' : '')}
-          </span>
-        </div>
-      )}
-
-      {done.length > 0 && (
-        <div className="pl-3 border-l-2 border-[var(--border-subtle)] space-y-1">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
-            Previous steps
-          </p>
-          <ul className="space-y-1">
-            {done.map((row) => (
-              <li key={row.callId} className="flex items-start gap-2 text-xs text-[var(--text-secondary)]">
-                <span className="text-[var(--brand)] shrink-0" aria-hidden>
-                  ✓
-                </span>
-                <span>{friendlyToolLabel(row.toolName)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {streamingText.length > 0 && (
-        <div className="pt-1 border-t border-[var(--border-subtle)]">
+    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-3 flex flex-col min-h-0">
+      {hasStream && (
+        <div className="pb-3 min-w-0">
           <MarkdownMessage content={streamingText} />
         </div>
       )}
+
+      <div
+        className={`sticky bottom-0 z-10 space-y-2 -mx-0.5 px-0.5 pb-0.5 rounded-b-lg bg-[var(--bg-canvas)] ${
+          hasStream ? 'border-t border-[var(--border-subtle)] pt-3' : ''
+        }`}
+      >
+        {awaitingFirstEvent && streamBusy && <StreamSkeleton />}
+
+        {!awaitingFirstEvent && (statusLine || (streamBusy && !streamingText)) && (
+          <div className="flex items-start gap-2 text-sm text-[var(--text-primary)]">
+            {(currentRunning || streamBusy) && (
+              <Loader2 size={16} className="animate-spin text-[var(--brand)] shrink-0 mt-0.5" aria-hidden />
+            )}
+            <span className="leading-snug">
+              {statusLine ?? (streamBusy ? 'Working…' : '')}
+            </span>
+          </div>
+        )}
+
+        {done.length > 0 && (
+          <div className="pl-3 border-l-2 border-[var(--border-subtle)] space-y-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+              Previous steps
+            </p>
+            <ul className="space-y-1">
+              {done.map((row) => (
+                <li key={row.callId} className="flex items-start gap-2 text-xs text-[var(--text-secondary)]">
+                  <span className="text-[var(--brand)] shrink-0" aria-hidden>
+                    ✓
+                  </span>
+                  <span>{friendlyToolLabel(row.toolName)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -154,6 +162,7 @@ export default function OnboardingChatPanel({
   const [error, setError] = useState<string | null>(null);
   const [awaitingFirstEvent, setAwaitingFirstEvent] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const normalizeUiBlock = (raw: OnboardingUiBlock): OnboardingUiBlock => {
     if (raw.type === 'auth_options') {
@@ -200,6 +209,14 @@ export default function OnboardingChatPanel({
     scrollToBottom();
   }, [messages, streamingText, uiBlock, activityRows]);
 
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    // Auto-grow textarea to fit content (no horizontal expansion).
+    el.style.height = '0px';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`; // cap ~8-10 lines
+  }, [input]);
+
   const runStream = useCallback(
     async (req: Parameters<typeof streamOnboardingChat>[0]) => {
       setStreamBusy(true);
@@ -210,6 +227,7 @@ export default function OnboardingChatPanel({
       setAwaitingFirstEvent(true);
 
       let acc = '';
+      let needsPostToolSeparator = false;
       try {
         await streamOnboardingChat(req, (ev, data) => {
           if (ev === 'start') {
@@ -223,9 +241,17 @@ export default function OnboardingChatPanel({
             return;
           }
           if (ev === 'token' && data && typeof data === 'object' && 'content' in data) {
-            const piece = normalizeTokenContent(
+            let piece = normalizeTokenContent(
               (data as { content?: unknown }).content,
             );
+            if (
+              needsPostToolSeparator &&
+              acc.trim().length > 0 &&
+              piece.trim().length > 0
+            ) {
+              piece = `\n\n---\n\n${piece}`;
+              needsPostToolSeparator = false;
+            }
             acc += piece;
             setStreamingText(acc);
             return;
@@ -242,6 +268,7 @@ export default function OnboardingChatPanel({
                 },
               ]);
             }
+            needsPostToolSeparator = true;
             return;
           }
           if (ev === 'tool_result' && data && typeof data === 'object') {
@@ -253,12 +280,11 @@ export default function OnboardingChatPanel({
                 ),
               );
             }
+            needsPostToolSeparator = true;
             return;
           }
           if (ev === 'ui_block' && data && typeof data === 'object' && 'ui' in data) {
             const ui = (data as { ui: OnboardingUiBlock }).ui;
-            // Stream is still open until `end` — release UI so buttons are not stuck disabled.
-            setStreamBusy(false);
             setUiBlock(normalizeUiBlock(ui));
             return;
           }
@@ -402,7 +428,7 @@ export default function OnboardingChatPanel({
               Guided setup — {connectorName}
             </h3>
             <p className="text-xs text-[var(--text-muted)]">
-              Status, tool activity, and the live reply appear together below.
+              The reply streams above; tool activity stays pinned at the bottom of the panel while you scroll.
             </p>
           </div>
         </div>
@@ -428,9 +454,18 @@ export default function OnboardingChatPanel({
         {messages.map((m, i) => (
           <div
             key={i}
-            className={`chat-msg ${m.role === 'user' ? 'chat-msg--user' : 'chat-msg--assistant'}`}
+            className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
-            <MarkdownMessage content={m.content} />
+            <div
+              className={[
+                'max-w-[min(42rem,92%)] rounded-2xl px-4 py-3 text-sm leading-relaxed',
+                m.role === 'user'
+                  ? 'bg-[var(--brand)] text-white shadow-sm'
+                  : 'bg-[var(--bg-canvas)] text-[var(--text-primary)] border border-[var(--border-subtle)]',
+              ].join(' ')}
+            >
+              <MarkdownMessage content={m.content} />
+            </div>
           </div>
         ))}
 
@@ -629,8 +664,8 @@ export default function OnboardingChatPanel({
       )}
 
       <div className="flex gap-2">
-        <input
-          type="text"
+        <textarea
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -641,7 +676,8 @@ export default function OnboardingChatPanel({
           }}
           placeholder="Ask a question or add details…"
           disabled={streamBusy}
-          className="flex-1 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-strong)] focus:ring-1 focus:ring-[var(--brand)] disabled:opacity-50"
+          rows={1}
+          className="flex-1 resize-none overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-strong)] focus:ring-1 focus:ring-[var(--brand)] disabled:opacity-50 whitespace-pre-wrap break-words"
           aria-label="Onboarding chat input"
         />
         <button
