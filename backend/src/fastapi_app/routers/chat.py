@@ -24,7 +24,7 @@ from fastapi_app.services.chat_service import (
     get_conversation_history,
     stream_agent_response,
 )
-from ai.agents.sql.tools.charts import clear_query_result
+from ai.tools.sql.charts import clear_query_result
 from fastapi_app.utils.auth_dep import get_current_user_dep
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])

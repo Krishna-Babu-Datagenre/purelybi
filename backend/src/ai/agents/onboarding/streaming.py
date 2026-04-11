@@ -20,7 +20,7 @@ from ai.agents.onboarding.infra.stores import (
     peek_pending_ui,
     prune_expired_oauth_states,
 )
-from ai.agents.onboarding.tools import UI_TOOL_NAMES
+from ai.tools.onboarding import UI_TOOL_NAMES
 
 logger = logging.getLogger(__name__)
 

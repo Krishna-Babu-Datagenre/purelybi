@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from ai.agents.onboarding.prompts import ONBOARDING_SYSTEM_PROMPT
 from ai.agents.onboarding.infra.stores import resolve_secrets
-from ai.agents.onboarding.tools import ALL_TOOLS
+from ai.tools.onboarding import ALL_TOOLS
 from ai.llms import get_onboarding_llm
 
 logger = logging.getLogger(__name__)

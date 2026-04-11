@@ -10,6 +10,6 @@ Act as an python expert, developing backend for React and TypeScript Frontend Ar
 
 # Project Folder Structure
 
-/src/ai                # LLMs (`llms.py`), agents (`agents/onboarding`, `agents/sql`), tools
+/src/ai                # LLMs (`llms.py`), agents (`agents/onboarding`, `agents/sql`), shared tools (`tools/common`, `tools/sql`, `tools/onboarding`)
 /src/fastapi_app       # FastAPI application (routers, services, models, utils)
 /supabase              # SQL migrations and queries (templates, etc.)

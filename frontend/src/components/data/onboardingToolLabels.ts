@@ -1,6 +1,6 @@
 /**
  * User-facing copy for onboarding agent tool names.
- * Keys must match `@tool` function names in `backend/src/ai/agents/onboarding/tools/__init__.py`.
+ * Keys must match `@tool` function names in `backend/src/ai/tools/onboarding/__init__.py`.
  */
 const TOOL_LABELS: Record<string, string> = {
   get_connector_spec: 'Loading connector details from the catalog',

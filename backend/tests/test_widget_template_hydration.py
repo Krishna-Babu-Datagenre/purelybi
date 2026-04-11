@@ -59,7 +59,10 @@ def _date_filters() -> list[dict]:
 
 @patch(
     "fastapi_app.services.widget_data_service.create_tenant_sandbox",
-    side_effect=lambda _tid: _seed_analytics_conn(),
+    side_effect=lambda _tid: (
+        _seed_analytics_conn(),
+        frozenset({"shopify_orders", "meta_daily_insights"}),
+    ),
 )
 class TemplateWidgetHydrationTests(unittest.TestCase):
     def test_payment_method_pie_has_data(self, _mock: object) -> None:

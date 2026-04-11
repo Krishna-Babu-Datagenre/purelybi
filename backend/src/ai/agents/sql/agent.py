@@ -7,13 +7,9 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware
 
 from ai.agents.sql.prompts import ANALYST_SYSTEM_PROMPT
-from ai.agents.sql.tools import (
-    calculate,
-    create_react_chart,
-    create_react_kpi,
-    get_current_time,
-)
-from ai.agents.sql.tools.duckdb_tools import build_duckdb_tools
+from ai.tools.common import calculate, get_current_time
+from ai.tools.sql import create_react_chart, create_react_kpi
+from ai.tools.sql.duckdb_tools import build_duckdb_tools
 from ai.llms import get_analyst_llm
 
 

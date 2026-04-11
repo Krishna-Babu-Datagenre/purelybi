@@ -32,7 +32,8 @@ On Windows, prefer `python -m uvicorn` over the `uvicorn` script to avoid path i
 | Path | Purpose |
 |------|---------|
 | `src/fastapi_app/` | FastAPI app: `app.py`, routers, services, Pydantic models, middleware |
-| `src/ai/` | `llms.py`, agents (`agents/onboarding/`, `agents/sql/`), optional shared `tools/` |
+| `src/ai/` | `llms.py`, agent graphs (`agents/onboarding/`, `agents/sql/`) |
+| `src/ai/tools/` | **All** LangChain tools: `tools/common/` (math, time, weather), `tools/sql/` (DuckDB + charts), `tools/onboarding/` (connector UI + ops) |
 | `tests/` | Unit tests |
 | `supabase/` | SQL snippets and schema assets used with Supabase |
 | `docs/` | Extra API notes (OpenAPI remains the source of truth for routes) |

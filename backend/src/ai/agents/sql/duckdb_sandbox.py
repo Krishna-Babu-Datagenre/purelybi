@@ -169,7 +169,7 @@ def discover_tenant_views(tenant_id: str) -> dict[str, str]:
     return views
 
 
-def create_tenant_sandbox(tenant_id: str) -> duckdb.DuckDBPyConnection:
+def create_tenant_sandbox(tenant_id: str) -> tuple[duckdb.DuckDBPyConnection, frozenset[str]]:
     _ensure_tls_ca_for_duckdb_azure()
     conn = duckdb.connect(":memory:")
     conn.execute("INSTALL azure; LOAD azure;")
@@ -183,7 +183,8 @@ def create_tenant_sandbox(tenant_id: str) -> duckdb.DuckDBPyConnection:
         f"CREATE SECRET azure_creds (TYPE AZURE, CONNECTION_STRING '{safe_cs}');"
     )
 
-    for view_name, blob_path in discover_tenant_views(tenant_id).items():
+    views = discover_tenant_views(tenant_id)
+    for view_name, blob_path in views.items():
         try:
             conn.execute(
                 f"CREATE OR REPLACE VIEW {view_name} AS "
@@ -192,4 +193,4 @@ def create_tenant_sandbox(tenant_id: str) -> duckdb.DuckDBPyConnection:
         except Exception:
             logger.exception("Failed mounting view %s from %s", view_name, blob_path)
 
-    return conn
+    return conn, frozenset(views.keys())

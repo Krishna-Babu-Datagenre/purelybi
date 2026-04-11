@@ -88,7 +88,7 @@ Answer ad hoc questions against the user’s **DuckDB** view of synced data: dis
 
 ### Tools
 
-- **DuckDB**: `sql_db_list_tables`, `sql_db_schema`, `sql_db_query` (read-only; built in `backend/src/ai/agents/sql/tools/duckdb_tools.py`).
+- **DuckDB**: `sql_db_list_tables`, `sql_db_schema`, `sql_db_query` (read-only; built in `backend/src/ai/tools/sql/duckdb_tools.py`).
 - **Helpers**: `calculate`, `get_current_time`.
 - **Widgets**: `create_react_chart`, `create_react_kpi` (bind to latest query result for the session).
 

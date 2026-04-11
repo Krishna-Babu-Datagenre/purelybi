@@ -7,7 +7,7 @@ from langchain_core.language_models import BaseLanguageModel
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import tool
 
-from ai.agents.sql.tools.charts import get_session_context, store_query_snapshot
+from ai.tools.sql.charts import get_session_context, store_query_snapshot
 
 QUERY_CHECKER_PROMPT = PromptTemplate(
     input_variables=["dialect", "query"],

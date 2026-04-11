@@ -15,7 +15,11 @@ from typing import Any, AsyncGenerator
 from langgraph.checkpoint.memory import InMemorySaver
 from ai.agents.sql import AnalystAgent
 from ai.agents.sql.duckdb_sandbox import create_tenant_sandbox
-from ai.agents.sql.tools.charts import clear_query_result, set_session_context
+from ai.tools.sql.charts import (
+    clear_query_result,
+    set_discovered_tables,
+    set_session_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +78,9 @@ def _get_or_create_agent(
         "database": database,
     }
     conn = None
+    discovered_tables: frozenset[str] = frozenset()
     if database.lower() == "duckdb":
-        conn = create_tenant_sandbox(tenant_id=tenant_id)
+        conn, discovered_tables = create_tenant_sandbox(tenant_id=tenant_id)
         agent_kwargs["conn"] = conn
 
     agent = agent_cls(**agent_kwargs).get_agent()
@@ -85,6 +90,7 @@ def _get_or_create_agent(
         "agent": agent,
         "settings": desired,
         "conn": conn,
+        "discovered_tables": discovered_tables,
     }
     return agent
 
@@ -180,8 +186,12 @@ async def stream_agent_response(
     )
     config = {"configurable": {"thread_id": session_id}}
 
-    # Set session context so chart tools can locate stored DataFrames
+    # Set session context so chart tools can locate stored DataFrames and tenant views
     set_session_context(session_id)
+    entry = _sessions.get(session_id) or {}
+    set_discovered_tables(
+        session_id, entry.get("discovered_tables", frozenset())
+    )
 
     # Track in-flight tool calls (mirrors active_tool_calls in visual_utils)
     active_tool_calls: dict[str, str] = {}  # tool_call_id → tool_name

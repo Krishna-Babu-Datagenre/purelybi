@@ -226,7 +226,7 @@ def get_max_data_date_iso(tenant_id: str) -> str:
         age = (now - cached_at).total_seconds()
         if age >= 0 and age < _MAX_DATA_DATE_CACHE_TTL_SECONDS:
             return value
-    conn = create_tenant_sandbox(tenant_id)
+    conn, _ = create_tenant_sandbox(tenant_id)
     try:
         iso = _get_latest_data_date(conn).isoformat()
     finally:
@@ -293,7 +293,7 @@ def resolve_date_preset(
     if days is None:
         raise ValueError(f"Unknown date preset: {preset!r}")
     if tenant_id:
-        conn = create_tenant_sandbox(tenant_id)
+        conn, _ = create_tenant_sandbox(tenant_id)
         try:
             reference = _get_latest_data_date(conn)
         finally:
@@ -813,7 +813,7 @@ def hydrate_widget(
         if conn is not None:
             chart_config = _run(conn)
         else:
-            c = create_tenant_sandbox(tenant_id)
+            c, _ = create_tenant_sandbox(tenant_id)
             try:
                 chart_config = _run(c)
             finally:
@@ -861,7 +861,7 @@ def hydrate_widgets(
             )
             for w in widgets
         ]
-    conn = create_tenant_sandbox(tenant_id)
+    conn, _ = create_tenant_sandbox(tenant_id)
     try:
         return [
             hydrate_widget(

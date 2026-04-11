@@ -9,6 +9,7 @@ in background threads outside the HTTP request context.
 """
 
 import json
+import re
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -49,6 +50,15 @@ def get_session_context() -> str | None:
     return _session_id_var.get()
 
 
+def set_discovered_tables(session_id: str, tables: frozenset[str]) -> None:
+    """
+    Store DuckDB view names discovered for this chat session (from blob layout).
+
+    Used to populate ``data_config`` sources without hardcoding integration names.
+    """
+    _session_discovered_tables[session_id] = tables
+
+
 # ============================================================================
 # Module-Level Data Storage (Session-Keyed)
 # ============================================================================
@@ -65,16 +75,8 @@ class _QuerySnapshot:
 # Single store keyed by session_id — query and DataFrame travel together.
 _session_store: dict[str, _QuerySnapshot] = {}
 
-# Known analytics tables for data_config source detection
-_ANALYTICS_TABLES = frozenset(
-    {
-        "shopify_orders",
-        "meta_campaign_insights",
-        "meta_daily_insights",
-        "meta_ad_insights",
-        "meta_adset_insights",
-    }
-)
+# View/table names discovered for the tenant (same set as DuckDB sandbox), keyed by session_id.
+_session_discovered_tables: dict[str, frozenset[str]] = {}
 
 
 def store_query_snapshot(session_id: str, query: str, df: pd.DataFrame) -> None:
@@ -127,6 +129,7 @@ def get_query_result(session_id: str) -> pd.DataFrame | None:
 def clear_query_result(session_id: str) -> None:
     """Clear the stored query snapshot for a session."""
     _session_store.pop(session_id, None)
+    _session_discovered_tables.pop(session_id, None)
 
 
 # ============================================================================
@@ -709,10 +712,27 @@ ECHARTS_BUILDERS = {
 # ============================================================================
 
 
+def _sql_references_identifier(sql: str, name: str) -> bool:
+    """True if *name* appears as a whole SQL identifier (case-insensitive)."""
+    if not name:
+        return False
+    esc = re.escape(name)
+    if re.search(rf"\b{esc}\b", sql, re.IGNORECASE):
+        return True
+    # Quoted identifiers (DuckDB / SQL standard)
+    return re.search(rf'"{esc}"', sql) is not None
+
+
 def _detect_source_tables(sql: str) -> list[str]:
-    """Return analytics tables referenced in *sql* (case-insensitive)."""
-    upper = sql.upper()
-    return [t for t in _ANALYTICS_TABLES if t.upper() in upper]
+    """Return tenant view names from the session allowlist that appear in *sql*."""
+    session_id = get_session_context()
+    if not session_id:
+        return []
+    known = _session_discovered_tables.get(session_id)
+    if not known:
+        return []
+    matched = [t for t in known if _sql_references_identifier(sql, t)]
+    return sorted(matched)
 
 
 def _build_chart_data_config(
