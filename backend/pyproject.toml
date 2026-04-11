@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "bi-agent-backend"
 version = "0.1.0"
@@ -34,3 +38,6 @@ dependencies = [
 dev = [
     "ipykernel>=7.1.0",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]

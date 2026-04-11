@@ -10,14 +10,6 @@ Act as an python expert, developing backend for React and TypeScript Frontend Ar
 
 # Project Folder Structure
 
-/data             # Data storage and management
-/sql-agent        # Main backend code for SQL agent
-  /app            # Sample Streamlit app for testing and demonstration
-  /notebooks      # Jupyter notebooks for experimentation and prototyping
-  /streamchat     # Agent framework code and related utilities
-/bi-templates     # Dashboard templates and related code
-/fastapi-app      # FastAPI application code for the backend
-  /routers        # API route definitions
-  /services       # Business logic and service layer
-  /models         # Data models and schemas
-  /utils          # Utility functions and helpers
+/src/ai                # LLMs (`llms.py`), agents (`agents/onboarding`, `agents/sql`), tools
+/src/fastapi_app       # FastAPI application (routers, services, models, utils)
+/supabase              # SQL migrations and queries (templates, etc.)

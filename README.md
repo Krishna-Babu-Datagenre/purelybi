@@ -12,9 +12,8 @@ Monorepo, main pieces:
 
 | Path | Role |
 |------|------|
-| `backend/` | FastAPI app (`fastapi_app/`), Python deps via **uv** (`pyproject.toml`) |
+| `backend/` | FastAPI (`src/fastapi_app/`), agents (`src/ai/`), Python deps via **uv** (`pyproject.toml`) |
 | `frontend/` | Vite + React SPA |
-| `sql-agent/` | LangGraph agents and DuckDB tooling; added to `sys.path` at API startup so `import streamchat…` resolves here |
 | `azure-function-schema-updater/`, `azure-function-sync-orchestrator/` | Azure Functions (timers) |
 | `docker-image/` | Container Apps Job image for sync workers |
 
@@ -39,7 +38,7 @@ Authoritative variable names and comments live in **`backend/.env-example`**. Hi
 - **Onboarding**: `API_PUBLIC_BASE_URL`, `ONBOARDING_FRONTEND_REDIRECT`, `ONBOARDING_DOCKER_ENABLED`, `ONBOARDING_DOCKER_EXECUTION_MODE` (`local` vs `azure_job`), optional ACA settings for remote Docker jobs
 - **CORS**: `CORS_EXTRA_ORIGINS` (comma-separated) for deployed frontends
 
-**LLM (required for chat and onboarding agents):** `AZURE_LLM_ENDPOINT`, `AZURE_LLM_API_KEY`, `AZURE_LLM_NAME` (used by `fastapi_app/onboarding/llm.py` and `sql-agent` analyst).
+**LLM (required for chat and onboarding agents):** `AZURE_LLM_ENDPOINT`, `AZURE_LLM_API_KEY`, `AZURE_LLM_NAME` (used by `backend/src/ai/llms.py` for onboarding and SQL agents).
 
 ---
 
@@ -53,7 +52,7 @@ FastAPI routers cover more than streaming agents: **auth** (Supabase-backed), **
 
 ### backend
 
-FastAPI (`backend/fastapi_app`), LangChain / LangGraph agents, DuckDB (per-tenant sandboxes over synced Parquet), Supabase (catalog, user connector configs, secrets). Python 3.12+, packaged with **uv** (`backend/pyproject.toml`).
+FastAPI (`backend/src/fastapi_app`), LangChain / LangGraph agents in `backend/src/ai/`, DuckDB (per-tenant sandboxes over synced Parquet), Supabase (catalog, user connector configs, secrets). Python 3.12+, packaged with **uv** (`backend/pyproject.toml`).
 
 ### frontend
 
@@ -77,7 +76,7 @@ Airbyte OSS–style connectors: connection specs and Docker images come from the
 
 ### Onboarding Agent
 
-LangChain `create_agent` in `fastapi_app/onboarding/agent_factory.py`, streamed over SSE (`/api/onboarding` — same event shape as chat plus `ui_block`). Tools combine **UI** (`render_auth_options`, `render_input_fields`, `render_stream_selector`, `start_oauth_flow`), **connector ops** (`get_connector_spec`, `test_connection`, `discover_streams`, `run_sync`), and **persistence** (`save_config` → Supabase). Optional Docker-backed discover/read when `ONBOARDING_DOCKER_ENABLED` is set.
+LangChain `create_agent` in `backend/src/ai/agents/onboarding/agent.py`, streamed over SSE (`/api/onboarding` — same event shape as chat plus `ui_block`). Tools combine **UI** (`render_auth_options`, `render_input_fields`, `render_stream_selector`, `start_oauth_flow`), **connector ops** (`get_connector_spec`, `test_connection`, `discover_streams`, `run_sync`), and **persistence** (`save_config` → Supabase). Optional Docker-backed discover/read when `ONBOARDING_DOCKER_ENABLED` is set.
 
 ---
 
@@ -85,11 +84,11 @@ LangChain `create_agent` in `fastapi_app/onboarding/agent_factory.py`, streamed 
 
 ### Purpose
 
-Answer ad hoc questions against the user’s **DuckDB** view of synced data: discover schema, run read-only SQL, optionally emit ECharts and KPI widget payloads the React app can place on dashboards. Served from `/api/chat` (SSE); session-scoped agent state in `fastapi_app/services/chat_service.py`. Primary implementation: `AnalystAgent` in `sql-agent/streamchat/agents/analyst.py`; `SupervisorAgent` exists for alternative routing.
+Answer ad hoc questions against the user’s **DuckDB** view of synced data: discover schema, run read-only SQL, optionally emit ECharts and KPI widget payloads the React app can place on dashboards. Served from `/api/chat` (SSE); session-scoped agent state in `backend/src/fastapi_app/services/chat_service.py`. Primary implementation: `AnalystAgent` in `backend/src/ai/agents/sql/agent.py`.
 
 ### Tools
 
-- **DuckDB**: `sql_db_list_tables`, `sql_db_schema`, `sql_db_query` (read-only; built in `streamchat/tools/duckdb_tools.py`).
+- **DuckDB**: `sql_db_list_tables`, `sql_db_schema`, `sql_db_query` (read-only; built in `backend/src/ai/agents/sql/tools/duckdb_tools.py`).
 - **Helpers**: `calculate`, `get_current_time`.
 - **Widgets**: `create_react_chart`, `create_react_kpi` (bind to latest query result for the session).
 

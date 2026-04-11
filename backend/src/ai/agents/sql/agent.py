@@ -1,0 +1,73 @@
+"""SQL / analytics agent (LangChain graph over DuckDB)."""
+
+from __future__ import annotations
+
+import duckdb
+from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
+
+from ai.agents.sql.prompts import ANALYST_SYSTEM_PROMPT
+from ai.agents.sql.tools import (
+    calculate,
+    create_react_chart,
+    create_react_kpi,
+    get_current_time,
+)
+from ai.agents.sql.tools.duckdb_tools import build_duckdb_tools
+from ai.llms import get_analyst_llm
+
+
+class AnalystAgent:
+    """Agent designed to interact with a SQL database for data analysis tasks."""
+
+    def __init__(
+        self,
+        llm="gpt-4.1-mini",
+        checkpointer=None,
+        database: str = "DuckDB",
+        conn: duckdb.DuckDBPyConnection | None = None,
+    ):
+        if database.lower() != "duckdb":
+            raise ValueError("Only DuckDB is supported by AnalystAgent.")
+        if conn is None:
+            raise ValueError("DuckDB connection is required for AnalystAgent.")
+        model = get_analyst_llm() if llm is None or isinstance(llm, str) else llm
+        database_tools = build_duckdb_tools(conn, model)
+
+        self.agent = create_agent(
+            model=model,
+            tools=database_tools
+            + [
+                calculate,
+                get_current_time,
+                create_react_chart,
+                create_react_kpi,
+            ],
+            middleware=[
+                SummarizationMiddleware(
+                    model=model,
+                    trigger=("tokens", 4000),
+                    keep=("messages", 12),
+                )
+            ],
+            checkpointer=checkpointer,
+            system_prompt=ANALYST_SYSTEM_PROMPT,
+        )
+
+        self.starter_prompts = {
+            ":blue[:material/database:] How many journeys were there in 2025?": (
+                "How many journeys were there in 2025?"
+            ),
+            ":blue[:material/database:] YoY growth in journeys": (
+                "What is the year-over-year growth in journeys between 2024 and 2025?"
+            ),
+        }
+
+    def get_agent(self):
+        return self.agent
+
+    def get_starter_prompts(self):
+        return self.starter_prompts
+
+
+__all__ = ["AnalystAgent"]

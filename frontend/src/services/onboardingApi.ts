@@ -122,7 +122,7 @@ export function normalizeInputFieldsPayload(fields: unknown): InputFieldNormaliz
   });
 }
 
-/** Dynamic UI payload from the onboarding agent (mirrors Streamlit ``pending_ui``). */
+/** Dynamic UI payload from the onboarding agent (server `pending_ui` state). */
 export type OnboardingUiBlock =
   | { type: 'auth_options'; options: AuthOptionNormalized[] }
   | {

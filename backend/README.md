@@ -1,94 +1,58 @@
 # BI Agent Backend
 
-Backend API for a BI-style app: natural-language analytics (LangChain agents over SQL), dashboard templates, and chat streaming via **FastAPI**. A **Streamlit** app under `sql-agent/` exists for local experimentation with the same agents.
+FastAPI service for the Purely BI app: **auth**, **dashboards**, **templates**, **connectors**, **streaming chat** over user data (DuckDB over Parquet), and **guided onboarding** for new sources.
+
+Python **3.12+**, dependencies managed with **[uv](https://github.com/astral-sh/uv)**. Application code lives under **`src/`** as installable packages (`fastapi_app`, `ai`).
 
 ---
 
-## Install (developers)
+## Quick start
 
 ```bash
 uv sync
 ```
 
-Copy `.env-example` to `.env` (PowerShell: `Copy-Item .env-example .env`).
+Copy `.env-example` to `.env` and set API keys and URLs (see comments in `.env-example`).
 
-Edit `.env` with your keys (e.g. Azure OpenAI). Paths are relative to the repo root.
-
----
-
-## Run locally
-
-**API (main backend):**
+**Run the API** (from this `backend/` directory):
 
 ```bash
 uv run python -m uvicorn fastapi_app.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Use `python -m uvicorn` (not `uv run uvicorn`). On Windows, `uv run` can fail with **Failed to canonicalize script path** when launching the `uvicorn` console script; invoking the module avoids that. With a venv activated, `python -m uvicorn …` is equivalent.
+On Windows, prefer `python -m uvicorn` over the `uvicorn` script to avoid path issues with `uv run`.
 
-- OpenAPI docs: `http://127.0.0.1:8000/docs`
+- Docs: `http://127.0.0.1:8000/docs`
 - Health: `http://127.0.0.1:8000/health`
 
-**Streamlit (optional, SQL agent playground):**
+---
 
-```bash
-uv run python -m streamlit run sql-agent/app/app.py
-```
+## Layout
+
+| Path | Purpose |
+|------|---------|
+| `src/fastapi_app/` | FastAPI app: `app.py`, routers, services, Pydantic models, middleware |
+| `src/ai/` | `llms.py`, agents (`agents/onboarding/`, `agents/sql/`), optional shared `tools/` |
+| `tests/` | Unit tests |
+| `supabase/` | SQL snippets and schema assets used with Supabase |
+| `docs/` | Extra API notes (OpenAPI remains the source of truth for routes) |
+
+Agent code is **not** embedded under `fastapi_app/`; HTTP layers import from `ai`.
 
 ---
 
-## CI/CD (GitHub Actions)
+## Chat and analytics
 
-Workflow: `.github/workflows/deploy-azure.yml`
-
-- **Trigger:** push to `main`, or manual **workflow_dispatch**
-- **Build:** `uv pip compile` → install deps into `.python_packages/lib/site-packages` → artifact zip
-- **Deploy:** `azure/webapps-deploy` to the App Service named in the workflow (`AZURE_WEBAPP_NAME`); requires repo secret **`AZURE_WEBAPP_PUBLISH_PROFILE`**
-
-Adjust `AZURE_WEBAPP_NAME` if you deploy to a different app.
+`POST /api/chat` streams SSE responses from the **analyst** agent (`agent_type`: `"analyst"`). It runs **read-only SQL** against a tenant-scoped **DuckDB** connection built over **Parquet** in Azure Blob (`src/ai/agents/sql/duckdb_sandbox.py`). Widget hydration for dashboards uses the same sandbox pattern in `fastapi_app/services/widget_data_service.py`.
 
 ---
 
-## Azure resources (non-prod / CI)
+## Deployment
 
-| Name | Value |
-|------|--------|
-| Subscription ID | `3892ad52-b508-4b32-8a93-ac5a9c1712e4` |
-| Region | `centralindia` |
-| Resource group | `rg-pocs-np-ci` |
-| App Service plan | `asp-dravya-bi-backend-np-ci` |
-| App Service (API) | `app-dravya-bi-backend-np-ci` |
-| Public base URL | `https://app-dravya-bi-backend-np-ci.azurewebsites.net` |
-| Storage account (blob / ADLS Gen2) | `adlsgen2dravya01` |
-| Analytics data (Parquet) | container per `BLOB_CONTAINER_NAME` / `AZURE_STORAGE_CONTAINER` (e.g. `raw`), prefix `USER_DATA_BLOB_PREFIX/{user_id}/` |
+CI/CD is defined under the repo’s `.github/workflows/` (e.g. App Service deploy). The build installs dependencies and the local package so `fastapi_app` and `ai` resolve from `src/` in the deployment artifact.
 
 ---
 
-## Analytics data (DuckDB + Parquet)
+## More context
 
-The API does **not** bundle a local analytics database file. The chat agent and dashboard widget hydration read **user-scoped Parquet** in Azure Blob through an ephemeral **DuckDB** connection (`AZURE_STORAGE_CONNECTION_STRING`, `streamchat/duckdb_sandbox.py`). Sync jobs (Azure Functions / Container Apps workers) populate that layout; see `MULTI_TENANT_TASK_CHECKLIST.md` Phase 6.
-
----
-
-## Backend health
-
-**Liveness / quick check:**
-
-```powershell
-Invoke-RestMethod -Uri "https://app-dravya-bi-backend-np-ci.azurewebsites.net/health" -Method GET
-```
-
-Use **`GET /health`** for status.
-
----
-
-## Repo layout (short)
-
-| Path | Role |
-|------|------|
-| `fastapi_app/` | FastAPI app, routers, services |
-| `sql-agent/streamchat/` | LangChain agents and tools |
-| `sql-agent/app/` | Streamlit demo |
-| `supabase/` | SQL migrations / queries (templates, etc.) |
-
-See `AGENTS.md` for project context and folder conventions.
+See **`AGENTS.md`** in this folder for Cursor/agent-oriented notes on the backend.

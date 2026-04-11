@@ -25,7 +25,7 @@ Send a message to the AI agent and receive a streamed response.
 |---|---|---|---|
 | `message` | string | required | The user's question |
 | `session_id` | string | `"default"` | Reuse to continue a conversation |
-| `agent_type` | string | `"analyst"` | `"analyst"` or `"supervisor"` |
+| `agent_type` | string | `"analyst"` | Must be `"analyst"` (DuckDB analytics agent) |
 | `llm` | string | `"gpt-4.1"` | LLM model name |
 | `database` | string | `"DuckDB"` | Must be `"DuckDB"` |
 
