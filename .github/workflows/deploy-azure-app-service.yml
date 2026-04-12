@@ -38,11 +38,13 @@ jobs:
       - name: Generate requirements.txt
         run: uv pip compile pyproject.toml -o requirements.txt
 
-      - name: Install dependencies for Azure (site-packages)
-        run: |
-          uv pip install -r requirements.txt --target .python_packages/lib/site-packages
-      
-      # uv pip install . --target .python_packages/lib/site-packages --no-deps
+      # Oryx builds antenv from requirements.txt on the web app; it does not use a prebuilt
+      # .python_packages folder from this zip. Application modules live under src/ and must
+      # be importable via PYTHONPATH (see backend/startup.sh), not as an installed wheel.
+      #
+      # After the first deploy, configure the web app (publish-profile auth cannot set this from
+      # webapps-deploy): Configuration -> Application settings -> PYTHONPATH = /home/site/wwwroot/src
+      # OR General settings -> Startup command = bash /home/site/wwwroot/startup.sh
 
       # Stage, then zip. upload-artifact v4 often unpacks directory uploads without the outer folder name, so
       # webapps-deploy cannot rely on a ./stage-app path after download; a single .zip has a stable path.
