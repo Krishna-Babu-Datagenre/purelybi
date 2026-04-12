@@ -37,14 +37,17 @@ jobs:
 
       - name: Generate requirements.txt
         run: uv pip compile pyproject.toml -o requirements.txt
+        # Append local install instruction
+        run: echo "." >> requirements.txt
 
       # Oryx builds antenv from requirements.txt on the web app; it does not use a prebuilt
       # .python_packages folder from this zip. Application modules live under src/ and must
       # be importable via PYTHONPATH (see backend/startup.sh), not as an installed wheel.
       #
       # After the first deploy, configure the web app (publish-profile auth cannot set this from
-      # webapps-deploy): Configuration -> Application settings -> PYTHONPATH = /home/site/wwwroot/src
-      # OR General settings -> Startup command = bash /home/site/wwwroot/startup.sh
+      # webapps-deploy). Oryx extracts the app under /tmp/...; wwwroot may not contain your files.
+      # General settings -> Startup command: bash startup.sh
+      # (use a relative path, not /home/site/wwwroot/startup.sh). Optional: PYTHONPATH is set in startup.sh.
 
       # Stage, then zip. upload-artifact v4 often unpacks directory uploads without the outer folder name, so
       # webapps-deploy cannot rely on a ./stage-app path after download; a single .zip has a stable path.

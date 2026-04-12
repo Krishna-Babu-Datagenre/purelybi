@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Azure App Service runs dependencies from Oryx's antenv; application code lives under src/
-# without a pip install of the project. Put src on PYTHONPATH so `fastapi_app` and `ai` import.
+# Azure App Service: Oryx often extracts the app under /tmp/...; /home/site/wwwroot may only
+# hold output.tar.zst. Resolve paths from this script so imports work in both layouts.
 set -euo pipefail
-cd /home/site/wwwroot
-export PYTHONPATH="/home/site/wwwroot/src:${PYTHONPATH:-}"
-# App Service usually sets PORT for the process to bind to.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+export PYTHONPATH="${SCRIPT_DIR}/src:${PYTHONPATH:-}"
 PORT="${PORT:-${WEBSITES_PORT:-8000}}"
 exec gunicorn \
   --bind "0.0.0.0:${PORT}" \
