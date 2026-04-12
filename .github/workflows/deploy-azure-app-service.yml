@@ -36,9 +36,9 @@ jobs:
           cache-dependency-glob: "backend/uv.lock"
 
       - name: Generate requirements.txt
-        run: uv pip compile pyproject.toml -o requirements.txt
-        # Append local install instruction
-        run: echo "." >> requirements.txt
+        run: |
+          uv pip compile pyproject.toml -o requirements.txt
+          echo "." >> requirements.txt
 
       # Oryx builds antenv from requirements.txt on the web app; it does not use a prebuilt
       # .python_packages folder from this zip. Application modules live under src/ and must
