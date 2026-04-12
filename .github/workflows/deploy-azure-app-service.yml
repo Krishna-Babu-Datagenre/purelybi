@@ -60,6 +60,11 @@ jobs:
           cp -a backend stage-app
           rm -rf stage-app/.venv stage-app/venv 2>/dev/null || true
           rm -f stage-app/.env 2>/dev/null || true
+          # Oryx treats uv.lock + pyproject.toml as "install this workspace with uv/pip", which
+          # reinstalls bi-agent-backend and hits pip marker bugs (InvalidVersion: ''). The lockfile
+          # is only needed in CI to compile requirements.txt; runtime deps come from that file alone.
+          rm -f stage-app/uv.lock
+          rm -f stage-app/pyproject.toml
 
       - name: Zip deployment package
         working-directory: ${{ github.workspace }}/stage-app
