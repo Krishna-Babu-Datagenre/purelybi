@@ -41,7 +41,8 @@ jobs:
       - name: Install dependencies for Azure (site-packages)
         run: |
           uv pip install -r requirements.txt --target .python_packages/lib/site-packages
-          uv pip install . --target .python_packages/lib/site-packages --no-deps
+      
+      # uv pip install . --target .python_packages/lib/site-packages --no-deps
 
       # Stage, then zip. upload-artifact v4 often unpacks directory uploads without the outer folder name, so
       # webapps-deploy cannot rely on a ./stage-app path after download; a single .zip has a stable path.
