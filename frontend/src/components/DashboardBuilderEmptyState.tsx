@@ -175,7 +175,6 @@ export default function DashboardBuilderEmptyState() {
   const showGuidedChrome = wizardStep === 'guided';
   const allowChatInput = showGuidedChrome || wizardStep === 'magic-done';
 
-  const runOptionTitle = mode === 'magic' ? 'Magic run' : 'Guided (Interactive)';
   const runOptionSummary =
     mode === 'magic'
       ? wizardStep === 'magic-done' && !isStreaming
