@@ -11,6 +11,7 @@ import DataConnectPage from './components/data/DataConnectPage';
 import DataManagePage from './components/data/DataManagePage';
 import DataRawTablesPage from './components/data/DataRawTablesPage';
 import HomePage from './components/HomePage';
+import DashboardBuilderEmptyState from './components/DashboardBuilderEmptyState';
 import { useDashboardStore } from './store/useDashboardStore';
 import { useAuthStore } from './store/useAuthStore';
 import { useChatStore } from './store/useChatStore';
@@ -43,6 +44,7 @@ const App = () => {
   const topbarSubtitle = useMemo(() => {
     if (navigationPage === 'dashboard' && hasDashboard) return dashboard!.meta.name;
     if (navigationPage === 'home') return 'Your workspace';
+    if (navigationPage === 'dashboard-ai') return 'AI dashboard builder';
     if (navigationPage === 'data-connect') return 'Connect a new source';
     if (navigationPage === 'data-manage') return 'Manage connections';
     if (navigationPage === 'data-raw-tables') return 'View raw tables';
@@ -129,11 +131,27 @@ const App = () => {
               : navigationPage === 'data-connect' ||
                   navigationPage === 'data-manage' ||
                   navigationPage === 'data-raw-tables' ||
-                  navigationPage === 'home'
+                  navigationPage === 'home' ||
+                  navigationPage === 'dashboard-ai'
                 ? { paddingLeft: 0, paddingRight: 0 }
                 : { paddingLeft: '1.5rem', paddingRight: '1.5rem' }
           }
         >
+          {navigationPage === 'dashboard-ai' && (
+            <div
+              className="main-empty-state transition-[left] duration-300 overflow-hidden flex flex-col min-h-0 h-full"
+              style={{
+                position: 'fixed',
+                top: 'var(--topbar-height)',
+                left: sidebarCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
+                right: chatOpen && !chatModal ? chatWidthPx : 0,
+                height: 'calc(100dvh - var(--topbar-height))',
+                padding: 0,
+              }}
+            >
+              <DashboardBuilderEmptyState />
+            </div>
+          )}
           {navigationPage === 'dashboard' && (
             <>
               {showDashboardLoader && (
@@ -188,26 +206,18 @@ const App = () => {
               )}
               {!hasDashboard && !showDashboardLoader && (
                 <div
-                  className="main-empty-state transition-[left] duration-300"
+                  className="main-empty-state transition-[left] duration-300 overflow-y-auto flex flex-col min-h-0 h-full"
                   style={{
                     position: 'fixed',
                     top: 'var(--topbar-height)',
                     left: sidebarCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
-                    right: 0,
+                    right: chatOpen && !chatModal ? chatWidthPx : 0,
                     bottom: 0,
-                    display: 'grid',
-                    placeItems: 'center',
-                    padding: '1.5rem',
+                    display: 'flex',
+                    padding: 0,
                   }}
                 >
-                  <div className="flex flex-col items-center justify-center text-center max-w-sm">
-                    <h2 className="text-lg font-semibold text-[var(--text-primary)] tracking-tight mb-1">
-                      Select a Dashboard
-                    </h2>
-                    <p className="text-sm text-[var(--text-secondary)]">
-                      Pick a dashboard from the sidebar or create one with <strong className="text-[var(--brand)]">New Dashboard</strong>.
-                    </p>
-                  </div>
+                  <DashboardBuilderEmptyState />
                 </div>
               )}
             </>

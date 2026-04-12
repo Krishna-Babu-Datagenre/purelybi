@@ -169,7 +169,17 @@ def discover_tenant_views(tenant_id: str) -> dict[str, str]:
     return views
 
 
-def create_tenant_sandbox(tenant_id: str) -> tuple[duckdb.DuckDBPyConnection, frozenset[str]]:
+def list_tenant_dataset_view_names(tenant_id: str) -> list[str]:
+    """Return sorted DuckDB view names for the tenant's synced Parquet data (no DB connection)."""
+    views = discover_tenant_views(tenant_id)
+    return sorted(views.keys())
+
+
+def create_tenant_sandbox(
+    tenant_id: str,
+    *,
+    views_filter: frozenset[str] | None = None,
+) -> tuple[duckdb.DuckDBPyConnection, frozenset[str]]:
     _ensure_tls_ca_for_duckdb_azure()
     conn = duckdb.connect(":memory:")
     conn.execute("INSTALL azure; LOAD azure;")
@@ -184,6 +194,18 @@ def create_tenant_sandbox(tenant_id: str) -> tuple[duckdb.DuckDBPyConnection, fr
     )
 
     views = discover_tenant_views(tenant_id)
+    if views_filter is not None:
+        filtered = {k: v for k, v in views.items() if k in views_filter}
+        if not filtered:
+            known = ", ".join(sorted(views.keys())[:40])
+            suffix = f" Known: {known}." if known else ""
+            raise ValueError(
+                "No datasets match the current selection. "
+                "Pick at least one dataset that exists for this account."
+                + suffix
+            )
+        views = filtered
+
     for view_name, blob_path in views.items():
         try:
             conn.execute(

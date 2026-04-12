@@ -200,6 +200,8 @@ export interface ChatToolCall {
 export interface ChatMessage {
   role: ChatRole;
   content: string | null;
+  /** Magic Mode: synthetic user line from User Proxy AI (SSE `proxy_reply`) */
+  proxyAuto?: boolean;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   tool_name?: string;
@@ -259,6 +261,16 @@ export interface SSEChartData {
 
 export interface SSEEndData {}
 
+/** Magic Mode: one assistant turn completed; client flushes streaming buffers */
+export interface SSESegmentEndData {
+  [key: string]: unknown;
+}
+
+/** Magic Mode: synthetic user message from User Proxy AI */
+export interface SSEProxyReplyData {
+  content: string;
+}
+
 export interface SSEErrorData {
   detail: string;
 }
@@ -270,6 +282,8 @@ export type SSEData =
   | SSEToolCallArgsData
   | SSEToolResultData
   | SSEChartData
+  | SSESegmentEndData
+  | SSEProxyReplyData
   | SSEEndData
   | SSEErrorData;
 
@@ -280,6 +294,22 @@ export interface ChatSendRequest {
   agent_type?: string;
   llm?: string;
   database?: string;
+  /** When agent_type is dashboard */
+  dashboard_mode?: 'magic' | 'guided';
+  /** Omit to use all tenant datasets */
+  selected_datasets?: string[];
+  /** Magic Mode: passed to User Proxy for intent alignment */
+  magic_dashboard_name?: string;
+  magic_goal?: string;
+}
+
+/** GET /api/dashboards/builder/readiness */
+export interface DashboardBuilderReadiness {
+  status: 'ready' | 'waiting_sync' | 'no_connector';
+  message: string;
+  datasets: string[];
+  has_connector: boolean;
+  has_synced_data: boolean;
 }
 
 /* ─────────────────────────────────────────────

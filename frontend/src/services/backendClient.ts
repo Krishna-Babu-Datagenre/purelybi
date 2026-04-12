@@ -11,6 +11,7 @@ import {
   SyncedTableInfo,
   ConnectorCatalogListItem,
   ConnectorCatalogDetail,
+  DashboardBuilderReadiness,
 } from '../types';
 import { useAuthStore } from '../store/useAuthStore';
 import { ensureAccessTokenFresh, fetchWithAuthRetry, runTokenRefresh } from './authSession';
@@ -126,6 +127,11 @@ export function listDashboards(options?: { forceRefresh?: boolean }): Promise<Ap
   return request<ApiDashboardMeta[]>('/api/dashboards', {
     ...(options?.forceRefresh ? { cache: 'no-store' as RequestCache } : {}),
   });
+}
+
+/** GET /api/dashboards/builder/readiness — data + dataset view names for AI dashboard builder */
+export function getDashboardBuilderReadiness(): Promise<DashboardBuilderReadiness> {
+  return request<DashboardBuilderReadiness>('/api/dashboards/builder/readiness');
 }
 
 /** GET /api/dashboards/{id} — get dashboard with widgets */

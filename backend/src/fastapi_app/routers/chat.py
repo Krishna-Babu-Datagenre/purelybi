@@ -61,7 +61,14 @@ async def chat(
             status_code=400,
             detail="Only DuckDB is supported for /api/chat.",
         )
+    if request.agent_type == "dashboard":
+        if request.selected_datasets is not None and len(request.selected_datasets) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="selected_datasets cannot be empty; omit the field to use all datasets.",
+            )
     session_id = _scoped_session_id(user, request.session_id)
+    dash_mode = request.dashboard_mode or "guided"
     return StreamingResponse(
         stream_agent_response(
             message=request.message,
@@ -70,6 +77,10 @@ async def chat(
             agent_type=request.agent_type,
             llm=request.llm,
             database=request.database,
+            dashboard_mode=dash_mode,
+            selected_datasets=request.selected_datasets,
+            magic_dashboard_name=request.magic_dashboard_name,
+            magic_goal=request.magic_goal,
         ),
         media_type="text/event-stream",
         headers={

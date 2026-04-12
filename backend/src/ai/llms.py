@@ -26,3 +26,15 @@ def get_analyst_llm():
         model=os.getenv("AZURE_LLM_NAME"),
         streaming=True,
     )
+
+
+def get_user_proxy_llm():
+    """Small non-streaming model for Magic Mode user-proxy decisions."""
+    from langchain_anthropic import ChatAnthropic
+
+    return ChatAnthropic(
+        anthropic_api_url=os.getenv("AZURE_LLM_ENDPOINT"),
+        anthropic_api_key=os.getenv("AZURE_LLM_API_KEY"),
+        model=os.getenv("AZURE_LLM_NAME"),
+        streaming=False,
+    )

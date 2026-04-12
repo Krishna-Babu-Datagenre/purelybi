@@ -14,6 +14,8 @@ POST   /api/dashboards/{dashboard_id}/filtered         – get dashboard with ar
 DELETE /api/dashboards/{dashboard_id}                  – delete a dashboard
 DELETE /api/dashboards/{dashboard_id}/widgets/{widget_id} – delete a widget
 PUT    /api/dashboards/{dashboard_id}/widgets/layouts  – persist widget layout changes
+GET    /api/dashboards/builder/readiness               – AI builder data status + dataset views
+PUT    /api/dashboards/{dashboard_id}/metadata          – update dashboard name/description
 """
 
 from __future__ import annotations
@@ -30,11 +32,13 @@ from fastapi_app.services.dashboard_service import (
     delete_dashboard,
     delete_widget,
     duplicate_dashboard,
+    get_dashboard_builder_readiness,
     get_user_dashboard,
     instantiate_template,
     list_user_dashboards,
     persist_widget_layouts,
     refresh_dashboard,
+    update_dashboard,
 )
 from fastapi_app.services.widget_data_service import (
     build_date_filters_from_params,
@@ -62,6 +66,13 @@ class CreateDashboardRequest(BaseModel):
     name: str = Field(..., min_length=1)
     description: str | None = None
     tags: list[str] | None = None
+
+
+class UpdateDashboardRequest(BaseModel):
+    """Body for updating dashboard metadata."""
+
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
 
 
 class DuplicateDashboardRequest(BaseModel):
@@ -127,6 +138,22 @@ class MaxDataDateResponse(BaseModel):
     max_date: str = Field(..., description="ISO date YYYY-MM-DD")
 
 
+class DashboardBuilderReadinessResponse(BaseModel):
+    """Whether the user can run the dashboard builder agent."""
+
+    status: str = Field(
+        ...,
+        description="ready | waiting_sync | no_connector",
+    )
+    message: str
+    datasets: list[str] = Field(
+        default_factory=list,
+        description="DuckDB view names available for this tenant (from synced Parquet).",
+    )
+    has_connector: bool
+    has_synced_data: bool
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -178,6 +205,16 @@ async def get_max_data_date(
     return MaxDataDateResponse(max_date=get_max_data_date_iso(user.id))
 
 
+@router.get("/builder/readiness", response_model=DashboardBuilderReadinessResponse)
+async def dashboard_builder_readiness(
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Data availability and dataset view names for the AI dashboard builder."""
+    return DashboardBuilderReadinessResponse(
+        **get_dashboard_builder_readiness(user_id=user.id)
+    )
+
+
 @router.get("/{dashboard_id}")
 async def get_dashboard(
     dashboard_id: str,
@@ -218,6 +255,32 @@ async def get_dashboard(
             detail=f"Dashboard '{dashboard_id}' not found.",
         )
     return dashboard
+
+
+@router.put("/{dashboard_id}/metadata")
+async def update_dashboard_metadata(
+    dashboard_id: str,
+    body: UpdateDashboardRequest,
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Update dashboard name and/or description."""
+    if body.name is None and body.description is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide name and/or description.",
+        )
+    row = update_dashboard(
+        user_id=user.id,
+        dashboard_id=dashboard_id,
+        name=body.name,
+        description=body.description,
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dashboard '{dashboard_id}' not found.",
+        )
+    return row
 
 
 @router.post("/{dashboard_id}/duplicate", status_code=201)

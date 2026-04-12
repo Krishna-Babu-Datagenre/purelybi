@@ -99,6 +99,7 @@ function computeWidgetInsertLayout(existing: Widget[], widgetType: string): Grid
 export type ShellPage =
   | 'home'
   | 'dashboard'
+  | 'dashboard-ai'
   | 'alerts'
   | 'data-connect'
   | 'data-manage'
@@ -112,6 +113,8 @@ interface DashboardState {
   /** Sidebar / main area route */
   navigationPage: ShellPage;
   setNavigationPage: (page: ShellPage) => void;
+  /** Open the AI dashboard builder route and clear the active canvas selection. */
+  openDashboardBuilder: () => void;
   /** Navigate to dashboard view and load a user dashboard (single user gesture — keeps shell route + data in sync). */
   openUserDashboard: (dashboardId: string) => Promise<void>;
 
@@ -212,6 +215,10 @@ interface DashboardState {
 export const useDashboardStore = create<DashboardState>((set, get) => ({
   navigationPage: 'home',
   setNavigationPage: (page) => set({ navigationPage: page }),
+  openDashboardBuilder: () => {
+    set({ navigationPage: 'dashboard-ai' });
+    get().clearActiveDashboard();
+  },
   openUserDashboard: async (dashboardId: string) => {
     set({ navigationPage: 'dashboard', activeDashboardListId: dashboardId });
     await get().loadDashboardById(dashboardId);

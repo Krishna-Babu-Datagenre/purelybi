@@ -16,6 +16,8 @@ export type SSEEventType =
   | 'tool_call_args'
   | 'tool_result'
   | 'chart'
+  | 'segment_end'
+  | 'proxy_reply'
   | 'end'
   | 'error';
 
@@ -30,13 +32,16 @@ export type SSEHandler = (event: SSEEventType, data: SSEData) => void;
  */
 export async function streamChat(
   body: ChatSendRequest,
-  onEvent: SSEHandler
+  onEvent: SSEHandler,
+  opts?: { signal?: AbortSignal }
 ): Promise<void> {
+  const signal = opts?.signal;
   let auth = await getAuthHeaders();
   let res = await fetch(`${BASE_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok && res.status === 401) {
@@ -47,6 +52,7 @@ export async function streamChat(
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...auth },
         body: JSON.stringify(body),
+        signal,
       });
     }
   }
@@ -85,9 +91,23 @@ export async function streamChat(
           const data = JSON.parse(raw) as SSEData;
           eventType = currentEvent;
           const effectiveEvent: SSEEventType =
-            eventType === 'token' || (typeof data === 'object' && data !== null && 'content' in data && !('tool_call_id' in data))
-              ? 'token'
-              : eventType;
+            eventType === 'segment_end' ||
+            eventType === 'proxy_reply' ||
+            eventType === 'start' ||
+            eventType === 'end' ||
+            eventType === 'error' ||
+            eventType === 'tool_call_start' ||
+            eventType === 'tool_call_args' ||
+            eventType === 'tool_result' ||
+            eventType === 'chart'
+              ? eventType
+              : eventType === 'token' ||
+                  (typeof data === 'object' &&
+                    data !== null &&
+                    'content' in data &&
+                    !('tool_call_id' in data))
+                ? 'token'
+                : eventType;
           onEvent(effectiveEvent, data);
           const consumed = lines.slice(0, i + 1).join('\n').length;
           buffer = normalized.length > consumed ? normalized.slice(consumed) : '';
@@ -106,6 +126,15 @@ export async function streamChat(
     new Promise<void>((r) => requestAnimationFrame(() => r()));
 
   while (true) {
+    if (signal?.aborted) {
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
     if (processOneFrame()) {
       await yieldToUI();
       continue;

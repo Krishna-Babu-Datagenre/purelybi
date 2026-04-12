@@ -8,6 +8,8 @@ import AddToDashboardMenu from './AddToDashboardMenu';
 
 interface ChatChartBlockProps {
   item: ChatChartItem;
+  /** Omit manual add (guided builder adds widgets automatically). */
+  hideAddToDashboard?: boolean;
 }
 
 const INLINE_HEIGHT = 240;
@@ -21,7 +23,7 @@ function isKpiConfig(config: unknown): config is KpiConfig {
   );
 }
 
-function ChatChartBlock({ item }: ChatChartBlockProps) {
+function ChatChartBlock({ item, hideAddToDashboard }: ChatChartBlockProps) {
   const [expanded, setExpanded] = useState(false);
 
   const isKpi = item.chart_type === 'kpi' && isKpiConfig(item.chartConfig);
@@ -61,14 +63,16 @@ function ChatChartBlock({ item }: ChatChartBlockProps) {
         </button>
       </div>
 
-      <div className="chat-chart-actions">
-        <AddToDashboardMenu
-          chartConfig={raw}
-          chartType={item.chart_type}
-          chartTitle={chartTitle}
-          dataConfig={item.dataConfig}
-        />
-      </div>
+      {!hideAddToDashboard && (
+        <div className="chat-chart-actions">
+          <AddToDashboardMenu
+            chartConfig={raw}
+            chartType={item.chart_type}
+            chartTitle={chartTitle}
+            dataConfig={item.dataConfig}
+          />
+        </div>
+      )}
 
       {expanded && (
         <div

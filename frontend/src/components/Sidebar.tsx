@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   Home,
   ChartLine,
+  Sparkles,
   RotateCw,
   ChevronLeft,
   ChevronRight,
@@ -90,6 +91,14 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
   const clearError = useDashboardStore((s) => s.clearError);
   const deleteDashboardApi = useDashboardStore((s) => s.deleteDashboardApi);
   const duplicateDashboardApi = useDashboardStore((s) => s.duplicateDashboardApi);
+  const openDashboardBuilder = useDashboardStore((s) => s.openDashboardBuilder);
+
+  const handleOpenAiDashboardBuilder = () => {
+    setSelectedTemplateSlug(null);
+    setSelectedDashboardRowIndex(null);
+    setClickedDashboardId(null);
+    openDashboardBuilder();
+  };
 
   const handleRefresh = async () => {
     if (isRefreshing) return;
@@ -328,11 +337,42 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
           )}
         </div>
 
+        {/* Collapsed: dashboard shortcuts (expanded list is below when !collapsed) */}
+        {collapsed && (
+          <div className="flex flex-col items-center gap-1.5" style={{ marginTop: '1.25rem' }}>
+            <button
+              type="button"
+              onClick={handleOpenAiDashboardBuilder}
+              className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'dashboard-ai' ? 'sidebar-item--active' : ''}`}
+              title="Build with AI"
+            >
+              <Sparkles size={20} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setNavigationPage('dashboard')}
+              className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'dashboard' ? 'sidebar-item--active' : ''}`}
+              title="Dashboards"
+            >
+              <ChartLine size={20} />
+            </button>
+          </div>
+        )}
+
         {/* ── DASHBOARDS ── */}
         {!collapsed && <div className="sidebar-section-title sidebar-section-title--purple" style={{ marginTop: '1.25rem' }}>DASHBOARDS</div>}
         {!collapsed && (
           <div className="sidebar-section" style={{ marginTop: '0.5rem' }}>
             <div className="flex flex-col gap-0.5">
+              <button
+                type="button"
+                onClick={handleOpenAiDashboardBuilder}
+                className={`sidebar-item ${navigationPage === 'dashboard-ai' ? 'sidebar-item--active' : ''}`}
+                title="Build dashboards with AI (Surprise me or Guided)"
+              >
+                <Sparkles size={20} />
+                <span className="truncate">Build with AI</span>
+              </button>
               {combinedDashRows.map((row, listIndex) => {
                 if (row.kind === 'user') {
                   const { db, userIndex } = row;
@@ -492,24 +532,14 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
         {!collapsed && <div className="sidebar-section-title sidebar-section-title--purple" style={{ marginTop: '1.25rem' }}>Alerts</div>}
         <div className={collapsed ? 'flex flex-col items-center gap-1.5' : 'space-y-0.5'} style={!collapsed ? { marginTop: '0.5rem' } : undefined}>
           {collapsed ? (
-            <>
-              <button
-                type="button"
-                onClick={() => setNavigationPage('dashboard')}
-                className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'dashboard' ? 'sidebar-item--active' : ''}`}
-                title="Dashboards"
-              >
-                <ChartLine size={20} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setNavigationPage('alerts')}
-                className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'alerts' ? 'sidebar-item--active' : ''}`}
-                title="Alerts"
-              >
-                <Bell size={20} />
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => setNavigationPage('alerts')}
+              className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'alerts' ? 'sidebar-item--active' : ''}`}
+              title="Alerts"
+            >
+              <Bell size={20} />
+            </button>
           ) : (
             <button
               type="button"

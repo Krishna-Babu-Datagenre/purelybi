@@ -9,7 +9,7 @@ React frontend.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,7 +32,7 @@ class ChatRequest(BaseModel):
     )
     agent_type: str = Field(
         default="analyst",
-        description="Which agent to use. Use 'analyst' for the DuckDB analytics agent.",
+        description="Which agent: 'analyst' (chat analytics) or 'dashboard' (dashboard builder).",
     )
     llm: str = Field(
         default="gpt-4.1",
@@ -41,6 +41,27 @@ class ChatRequest(BaseModel):
     database: str = Field(
         default="DuckDB",
         description="Database backend for analytics agent. Options: 'DuckDB'.",
+    )
+    dashboard_mode: Literal["magic", "guided"] | None = Field(
+        default=None,
+        description="When agent_type is 'dashboard': 'magic' (auto) or 'guided' (interactive).",
+    )
+    selected_datasets: list[str] | None = Field(
+        default=None,
+        description=(
+            "When agent_type is 'dashboard': DuckDB view names to scope queries; "
+            "omit or null to include all available datasets."
+        ),
+    )
+    magic_dashboard_name: str | None = Field(
+        default=None,
+        description=(
+            "When dashboard_mode is 'magic': dashboard title from setup (for User Proxy context)."
+        ),
+    )
+    magic_goal: str | None = Field(
+        default=None,
+        description="When dashboard_mode is 'magic': user-stated objective (for User Proxy context).",
     )
 
 

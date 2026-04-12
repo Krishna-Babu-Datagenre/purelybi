@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { ChatMessage, ChatChartItem, SSEData, EChartsConfig } from '../types';
+import type { MagicTimelineSegment } from '../utils/magicToolTimeline';
 import type { SSEEventType } from '../services/chatApi';
 import { streamChat, getChatHistory, clearChatHistory } from '../services/chatApi';
 import { useAuthStore } from './useAuthStore';
@@ -16,6 +17,8 @@ export interface ChatMessageWithCharts extends ChatMessage {
   charts?: ChatChartItem[];
   /** Tool calls made to produce this reply; shown in a collapsible "Agent activity" block */
   toolCalls?: ToolCallResult[];
+  /** Magic mode: text + tools in true chronological order */
+  magicTimeline?: MagicTimelineSegment[];
 }
 
 /** In-progress tool call shown in the thought process section */
@@ -187,9 +190,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (event === 'tool_call_start' && 'tool_call_id' in data && 'tool_name' in data) {
+        const d = data as import('../types').SSEToolCallStartData;
         const next = [
           ...state.streamingToolCalls,
-          { id: data.tool_call_id, name: data.tool_name, args: '' },
+          { id: d.tool_call_id, name: d.tool_name, args: '' },
         ];
         set({ streamingToolCalls: next });
         return;
@@ -240,8 +244,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (event === 'error' && 'detail' in data) {
+        const detail = String((data as import('../types').SSEErrorData).detail);
         set({
-          error: data.detail,
+          error: detail,
           isStreaming: false,
           streamingContent: '',
           streamingCharts: [],

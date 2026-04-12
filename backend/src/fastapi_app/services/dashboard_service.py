@@ -281,6 +281,44 @@ def build_live_template_dashboard(
 # ---------------------------------------------------------------------------
 
 
+def update_dashboard(
+    user_id: str,
+    dashboard_id: str,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any] | None:
+    """Update name and/or description for a user-owned dashboard. Returns row or None."""
+    if name is None and description is None:
+        return None
+    client = get_supabase_admin_client()
+    rows = (
+        client.table("dashboards")
+        .select("id")
+        .eq("id", dashboard_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        return None
+    payload: dict[str, Any] = {}
+    if name is not None:
+        payload["name"] = name
+    if description is not None:
+        payload["description"] = description
+    if not payload:
+        return None
+    updated = (
+        client.table("dashboards")
+        .update(payload)
+        .eq("id", dashboard_id)
+        .eq("user_id", user_id)
+        .execute()
+    ).data
+    return updated[0] if updated else None
+
+
 def create_dashboard(
     user_id: str,
     name: str,
@@ -632,6 +670,38 @@ def list_user_dashboards(user_id: str) -> list[dict[str, Any]]:
     ).data or []
     # Legacy: hide any old per-user copies of built-in templates (migration 005).
     return [r for r in rows if r.get("source") != "template"]
+
+
+def get_dashboard_builder_readiness(user_id: str) -> dict[str, Any]:
+    """UI state for AI dashboard builder: sync status, dataset view names, messaging."""
+    from fastapi_app.services.connector_service import list_user_connectors
+    from ai.agents.sql.duckdb_sandbox import list_tenant_dataset_view_names
+
+    connectors = list_user_connectors(user_id)
+    datasets = list_tenant_dataset_view_names(user_id)
+    has_data = len(datasets) > 0
+    has_connector = len(connectors) > 0
+
+    if has_data:
+        status = "ready"
+        message = "Your synced data is ready. You can generate dashboards with AI."
+    elif has_connector:
+        status = "waiting_sync"
+        message = (
+            "A data source is connected. Wait for the first sync to finish, "
+            "then come back here or refresh."
+        )
+    else:
+        status = "no_connector"
+        message = "Connect a data source under Data to enable AI-generated dashboards."
+
+    return {
+        "status": status,
+        "message": message,
+        "datasets": datasets,
+        "has_connector": has_connector,
+        "has_synced_data": has_data,
+    }
 
 
 # ---------------------------------------------------------------------------
