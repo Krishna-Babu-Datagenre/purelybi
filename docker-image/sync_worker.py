@@ -4,10 +4,35 @@ Reads the connector config from Supabase (not DuckDB), refreshes
 credentials if needed, runs PyAirbyte, writes Parquet to Azure Blob
 Storage, and updates the sync status in Supabase.
 
+Execution modes (determined by environment variables):
+
+  Default (PyAirbyte) — SYNC_CONFIG_ID is set, SYNC_PHASE is absent:
+    Uses PyAirbyte to pip-install and run the connector in-process.
+    Works for manifest-only and Python connectors.
+
+  Docker-native — SYNC_PHASE=docker_read:
+    For Java (Docker-only) connectors:
+      1. Loads config from Supabase, writes config.json + catalog.json to /output/<config_id>/
+      2. Launches a *second* ACA job using the official Airbyte Docker image
+         with the files bind-mounted via the shared Azure File Share
+      3. Waits for that job to complete
+      4. Parses Airbyte-protocol JSONL from /output/<config_id>/output.jsonl
+      5. Converts records to Parquet and uploads to Blob Storage
+
+  Connector runner — SYNC_PHASE=connector_run:
+    The official Airbyte image is launched by the Docker-native phase with this
+    env var. This mode is *not* handled by sync_worker.py — it's the native
+    connector's own entrypoint.
+
+  Onboarding probe — ONBOARDING_JOB_MODE=onboarding_connector_probe:
+    Runs connector check/discover/read for guided onboarding.
+
 Environment variables (set by the sync_orchestrator Azure Function):
     SYNC_CONFIG_ID            — UUID of the user_connector_configs row
     SYNC_USER_ID              — UUID of the user
     SYNC_CONNECTOR_NAME       — Display name of the connector
+    SYNC_PHASE                — Optional: "docker_read" for Docker-native path
+    SYNC_DOCKER_IMAGE         — Official Airbyte image (e.g. airbyte/source-mongodb-v2:6.6.4)
 
 Onboarding probe (set by FastAPI when ``ONBOARDING_DOCKER_EXECUTION_MODE=azure_job``):
     ONBOARDING_JOB_MODE           — ``onboarding_connector_probe`` to run connector check/discover/read via PyAirbyte
@@ -18,12 +43,18 @@ Shared (job template secrets):
     SUPABASE_SERVICE_ROLE_KEY — Service role key (bypasses RLS)
     AZURE_STORAGE_CONNECTION_STRING — Blob Storage connection string
     BLOB_CONTAINER_NAME       — Container name for Parquet output (default: "sync-output")
+
+Docker-native additional:
+    ACA_DOCKER_JOB_NAME       — ACA Job resource name for running official images
+    AZURE_SUBSCRIPTION_ID     — Azure subscription ID (for managing ACA jobs)
+    AZURE_RESOURCE_GROUP      — Azure resource group
 """
 
 import json
 import os
 import sys
 import tempfile
+import time
 from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
@@ -280,6 +311,341 @@ def _mark_failed(config_id: str, message: str) -> None:
         print(f"WARNING: Could not persist failed status: {exc}")
 
 
+# ── Docker-native sync pipeline (Java connectors) ────────────────────
+
+# Shared volume for exchanging config/output between Phase 1 (this worker)
+# and Phase 2 (official Airbyte connector image).  Azure File Share mounted here.
+DOCKER_OUTPUT_BASE = Path(os.environ.get("DOCKER_OUTPUT_DIR", "/output"))
+
+
+def _launch_connector_aca_job(
+    docker_image: str,
+    work_dir: Path,
+    config_id: str,
+) -> str:
+    """Launch the official Airbyte connector image as an ACA job.
+
+    The job reads config.json + catalog.json from ``work_dir`` and writes
+    Airbyte-protocol JSONL to ``work_dir/output.jsonl``.
+
+    Returns the execution name.
+    """
+    from azure.identity import DefaultAzureCredential
+    from azure.mgmt.appcontainers import ContainerAppsAPIClient
+
+    subscription_id = os.environ["AZURE_SUBSCRIPTION_ID"]
+    resource_group = os.environ["AZURE_RESOURCE_GROUP"]
+    job_name = os.environ["ACA_DOCKER_JOB_NAME"]
+    container_name = os.environ.get("ACA_DOCKER_CONNECTOR_CONTAINER_NAME", "connector")
+
+    credential = DefaultAzureCredential()
+    client = ContainerAppsAPIClient(credential, subscription_id)
+
+    # The work_dir is a sub-folder of the shared Azure File Share.
+    # Relative path from the mount root so the connector image uses the same mount.
+    rel_dir = work_dir.relative_to(DOCKER_OUTPUT_BASE)
+
+    # The connector image runs: <connector> read --config /data/config.json --catalog /data/catalog.json
+    # We override the command to redirect stdout to a JSONL file on the shared volume.
+    # The ACA Job template should mount the same File Share at /data.
+    container_override = {
+        "name": container_name,
+        "image": docker_image,
+        "command": ["/bin/sh"],
+        "args": [
+            "-c",
+            (
+                f"airbyte-connector read "
+                f"--config /data/{rel_dir}/config.json "
+                f"--catalog /data/{rel_dir}/catalog.json "
+                f"> /data/{rel_dir}/output.jsonl 2>/data/{rel_dir}/stderr.log "
+                f"|| true"
+            ),
+        ],
+        "env": [
+            {"name": "AIRBYTE_ENABLE_UNSAFE_CODE", "value": "true"},
+        ],
+    }
+
+    print(f"  Launching connector ACA job: {job_name} image={docker_image}")
+    result = client.jobs.begin_start(
+        resource_group_name=resource_group,
+        job_name=job_name,
+        template={"containers": [container_override]},
+    ).result()
+
+    execution_name = getattr(result, "name", "unknown")
+    print(f"  Connector job execution: {execution_name}")
+    return str(execution_name)
+
+
+def _wait_for_connector_job(execution_name: str, timeout: int = 900) -> bool:
+    """Poll the connector ACA job until it reaches a terminal status.
+
+    Returns True on success, False on failure/timeout.
+    """
+    from azure.identity import DefaultAzureCredential
+    from azure.mgmt.appcontainers import ContainerAppsAPIClient
+
+    subscription_id = os.environ["AZURE_SUBSCRIPTION_ID"]
+    resource_group = os.environ["AZURE_RESOURCE_GROUP"]
+    job_name = os.environ["ACA_DOCKER_JOB_NAME"]
+
+    credential = DefaultAzureCredential()
+    client = ContainerAppsAPIClient(credential, subscription_id)
+    poll_interval = int(os.environ.get("DOCKER_JOB_POLL_INTERVAL", "10"))
+
+    terminal_success = {"succeeded", "completed", "success"}
+    terminal_failed = {"failed", "canceled", "cancelled", "stopped", "error"}
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            # SDK 3.x: client.job_execution(...)
+            job_exec_fn = getattr(client, "job_execution", None)
+            if callable(job_exec_fn):
+                execution = job_exec_fn(
+                    resource_group_name=resource_group,
+                    job_name=job_name,
+                    job_execution_name=execution_name,
+                )
+            else:
+                for attr in ("job_executions", "jobs_executions"):
+                    ops = getattr(client, attr, None)
+                    getter = getattr(ops, "get", None) if ops else None
+                    if callable(getter):
+                        execution = getter(
+                            resource_group_name=resource_group,
+                            job_name=job_name,
+                            job_execution_name=execution_name,
+                        )
+                        break
+                else:
+                    raise RuntimeError("No supported ACA job execution getter found")
+
+            # Extract status
+            if isinstance(execution, dict):
+                status = (execution.get("properties") or {}).get("status", "")
+            else:
+                status = str(
+                    getattr(getattr(execution, "properties", None), "status", None)
+                    or getattr(execution, "status", "")
+                    or ""
+                )
+            status = status.strip().lower()
+
+            if status in terminal_success:
+                print(f"  Connector job {execution_name} succeeded.")
+                return True
+            if status in terminal_failed:
+                print(f"  Connector job {execution_name} failed with status: {status}")
+                return False
+
+            print(f"  Connector job status: {status} — waiting...")
+        except Exception as exc:
+            print(f"  WARNING: Error polling connector job: {exc}")
+
+        time.sleep(poll_interval)
+
+    print(f"  Connector job {execution_name} timed out after {timeout}s")
+    return False
+
+
+def _parse_airbyte_jsonl(jsonl_path: Path) -> dict[str, list[dict]]:
+    """Parse Airbyte-protocol JSONL and return records grouped by stream name."""
+    streams: dict[str, list[dict]] = {}
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") == "RECORD":
+                record = msg.get("record", {})
+                stream_name = record.get("stream", "unknown")
+                data = record.get("data", {})
+                if data:
+                    streams.setdefault(stream_name, []).append(data)
+    return streams
+
+
+def run_docker_native_sync(config_id: str) -> None:
+    """Execute a full sync for a Docker-only (Java) connector.
+
+    This is the ``SYNC_PHASE=docker_read`` entrypoint.
+    """
+    update_status(config_id, last_sync_status="running", last_sync_error=None)
+
+    docker_image = os.environ.get("SYNC_DOCKER_IMAGE", "")
+    if not docker_image:
+        msg = "SYNC_DOCKER_IMAGE is required for SYNC_PHASE=docker_read"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
+
+    # 1. Load config from Supabase
+    print(f"[1/6] Loading config {config_id} from Supabase...")
+    row = load_config(config_id)
+    if not row:
+        print(f"ERROR: Config {config_id} not found")
+        sys.exit(1)
+
+    user_id = row["user_id"]
+    connector_name = row["connector_name"]
+    raw_config = row["config"]
+    oauth_meta = row.get("oauth_meta") or raw_config.get("__oauth_meta__", {})
+    selected_streams = row.get("selected_streams")
+
+    if isinstance(raw_config, str):
+        raw_config = json.loads(raw_config)
+
+    print(f"  User: {user_id}")
+    print(f"  Connector: {connector_name} ({docker_image})")
+    print(f"  Streams: {selected_streams or 'all'}")
+
+    # 2. Refresh credentials
+    if oauth_meta:
+        print("[2/6] Checking token freshness...")
+        try:
+            raw_config, was_refreshed = ensure_fresh_credentials(raw_config, oauth_meta)
+            if was_refreshed:
+                print("  Credentials refreshed — persisting to Supabase")
+                save_refreshed_config(config_id, raw_config, oauth_meta)
+            else:
+                print("  Token still valid")
+        except ReauthRequired as e:
+            print(f"  ERROR: {e}")
+            update_status(config_id, last_sync_status="reauth_required", last_sync_error=str(e))
+            sys.exit(2)
+        except TokenRefreshError as e:
+            print(f"  WARNING: Token refresh failed: {e}")
+            print("  Attempting sync with existing credentials...")
+    else:
+        print("[2/6] No OAuth metadata — skipping token refresh")
+
+    user_config = clean_config(raw_config)
+
+    # 3. Write config + catalog to shared volume
+    work_dir = DOCKER_OUTPUT_BASE / config_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = work_dir / "config.json"
+    config_path.write_text(json.dumps(user_config, default=str))
+    print(f"[3/6] Wrote config to {config_path}")
+
+    # Build a minimal configured catalog for ``read``.
+    # For the initial run, we do full_refresh on all (or selected) streams.
+    # We need to discover streams first — use PyAirbyte just for discover (lightweight).
+    print("[3/6] Discovering streams via PyAirbyte (metadata only)...")
+    source_name = extract_source_name(docker_image)
+    try:
+        source = ab.get_source(source_name, config=user_config, no_executor=True)
+        available = [str(s) for s in source.get_available_streams()]
+    except Exception:
+        # Fallback: if PyAirbyte can't even discover (expected for Java connectors
+        # without a PyPI package), use selected_streams from the DB or select all.
+        print("  PyAirbyte discover unavailable — using stored stream selection")
+        available = list(selected_streams) if selected_streams else []
+
+    if selected_streams:
+        streams_to_sync = [s for s in selected_streams if not available or s in available]
+        if not streams_to_sync:
+            streams_to_sync = available or list(selected_streams)
+    else:
+        streams_to_sync = available
+
+    # Write a ConfiguredAirbyteCatalog JSON
+    configured_streams = []
+    for stream_name in streams_to_sync:
+        configured_streams.append({
+            "stream": {
+                "name": stream_name,
+                "json_schema": {},
+                "supported_sync_modes": ["full_refresh"],
+            },
+            "sync_mode": "full_refresh",
+            "destination_sync_mode": "overwrite",
+        })
+
+    catalog = {"streams": configured_streams}
+    catalog_path = work_dir / "catalog.json"
+    catalog_path.write_text(json.dumps(catalog, default=str))
+    print(f"  Wrote catalog ({len(configured_streams)} streams) to {catalog_path}")
+
+    # 4. Launch the official connector image as a separate ACA job
+    print(f"[4/6] Launching connector image: {docker_image}...")
+    try:
+        execution_name = _launch_connector_aca_job(docker_image, work_dir, config_id)
+    except Exception as exc:
+        msg = f"Failed to launch connector job: {type(exc).__name__}: {exc}"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
+
+    # 5. Wait for connector job to complete
+    print(f"[5/6] Waiting for connector job {execution_name}...")
+    timeout = int(os.environ.get("DOCKER_JOB_TIMEOUT", "900"))
+    success = _wait_for_connector_job(execution_name, timeout=timeout)
+
+    if not success:
+        stderr_path = work_dir / "stderr.log"
+        stderr_tail = ""
+        if stderr_path.exists():
+            stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+        msg = f"Connector job failed. stderr: {stderr_tail}"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
+
+    # 6. Parse JSONL output → Parquet → Blob
+    print("[6/6] Parsing connector output and uploading...")
+    jsonl_path = work_dir / "output.jsonl"
+    if not jsonl_path.exists():
+        msg = "Connector job produced no output.jsonl"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
+
+    stream_records = _parse_airbyte_jsonl(jsonl_path)
+    if not stream_records:
+        msg = "No RECORD messages found in connector output"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
+
+    output_dir = Path(tempfile.mkdtemp())
+    rows_total = 0
+    for stream_name, records in stream_records.items():
+        df = pd.DataFrame(records)
+        if df.empty:
+            continue
+        parquet_path = output_dir / f"{stream_name}.parquet"
+        df.to_parquet(parquet_path, index=False)
+        rows_total += len(df)
+        print(f"  {stream_name}: {len(df)} rows")
+
+    uploaded = upload_to_blob(output_dir, user_id, docker_image)
+
+    # Clean up shared volume
+    try:
+        import shutil
+        shutil.rmtree(work_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    now = datetime.now(timezone.utc).isoformat()
+    update_status(
+        config_id,
+        last_sync_at=now,
+        last_sync_status="success",
+        last_sync_error=None,
+    )
+    print(f"\nDocker-native sync complete! {len(uploaded)} files uploaded, {rows_total} total rows.")
+
+
 def _pick_streams_for_probe(
     catalog: dict,
     requested: list | None,
@@ -419,14 +785,27 @@ if __name__ == "__main__":
             sys.exit(1)
         sys.exit(0)
 
+    sync_phase = os.environ.get("SYNC_PHASE", "")
     config_id = os.environ.get("SYNC_CONFIG_ID")
     if not config_id:
         print("ERROR: SYNC_CONFIG_ID environment variable is required")
         sys.exit(1)
-    try:
-        run_sync(config_id)
-    except Exception as exc:
-        err = f"{type(exc).__name__}: {exc}"
-        print(f"ERROR: {err}")
-        _mark_failed(config_id, err)
-        sys.exit(1)
+
+    if sync_phase == "docker_read":
+        # Docker-native path for Java connectors
+        try:
+            run_docker_native_sync(config_id)
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            print(f"ERROR: {err}")
+            _mark_failed(config_id, err)
+            sys.exit(1)
+    else:
+        # Default PyAirbyte path for Python / manifest connectors
+        try:
+            run_sync(config_id)
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            print(f"ERROR: {err}")
+            _mark_failed(config_id, err)
+            sys.exit(1)

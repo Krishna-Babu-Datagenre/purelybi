@@ -84,6 +84,7 @@ def upsert_to_supabase(supabase: Client, sources: list[dict[str, Any]]) -> dict[
             "docker_repository": docker_repo,
             "name": name,
             "docker_image_tag": tag,
+            "language": src.get("language") or "unknown",
             "icon_url": icon_url or None,
             "documentation_url": doc_url or None,
             "config_schema": config_schema,

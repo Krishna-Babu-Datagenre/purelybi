@@ -248,6 +248,7 @@ CREATE TABLE public.connector_schemas (
     docker_repository   TEXT NOT NULL UNIQUE,
     name                TEXT NOT NULL,
     docker_image_tag    TEXT NOT NULL DEFAULT 'latest',
+    language            TEXT NOT NULL DEFAULT 'unknown',
     icon_url            TEXT,
     documentation_url   TEXT,
     config_schema       JSONB,

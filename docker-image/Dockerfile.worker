@@ -18,7 +18,8 @@ WORKDIR /app
 # Allow connectors that use custom Python code (e.g. source-google-sheets)
 ENV AIRBYTE_ENABLE_UNSAFE_CODE=true
 
-RUN pip install --no-cache-dir airbyte supabase azure-storage-blob requests
+RUN pip install --no-cache-dir airbyte supabase azure-storage-blob requests \
+    azure-identity azure-mgmt-appcontainers
 
 COPY sync_worker.py /app/sync_worker.py
 COPY credential_refresh.py /app/credential_refresh.py

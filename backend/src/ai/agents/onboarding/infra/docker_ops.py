@@ -8,16 +8,56 @@ import subprocess
 import tempfile
 from typing import Any
 
-from ai.agents.onboarding.infra.azure_job_runner import run_onboarding_aca_job
-from fastapi_app.settings import ONBOARDING_DOCKER_EXECUTION_MODE
+from ai.agents.onboarding.infra.azure_job_runner import (
+    run_onboarding_aca_job,
+    run_onboarding_docker_native_job,
+)
+from fastapi_app.settings import DOCKER_IMAGE_LANGUAGES, ONBOARDING_DOCKER_EXECUTION_MODE
 
 
 def _use_azure_job_mode() -> bool:
     return ONBOARDING_DOCKER_EXECUTION_MODE == "azure_job"
 
 
+def _lookup_connector_language(docker_image: str) -> str:
+    """Look up the connector language from ``connector_schemas`` in Supabase.
+
+    Returns the language string (e.g. ``"java"``, ``"python"``, ``"manifest-only"``)
+    or ``"unknown"`` if not found.
+    """
+    try:
+        from fastapi_app.utils.supabase_client import get_supabase_admin_client
+
+        docker_repo = docker_image.split(":")[0]
+        client = get_supabase_admin_client()
+        rows = (
+            client.table("connector_schemas")
+            .select("language")
+            .eq("docker_repository", docker_repo)
+            .limit(1)
+            .execute()
+        ).data
+        if rows:
+            return rows[0].get("language", "unknown")
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _should_use_docker_native(docker_image: str) -> bool:
+    """Return True if this connector should use the official Docker image."""
+    language = _lookup_connector_language(docker_image)
+    return language in DOCKER_IMAGE_LANGUAGES
+
+
 def docker_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bool, str]:
     if _use_azure_job_mode():
+        if _should_use_docker_native(docker_image):
+            return run_onboarding_docker_native_job(
+                action="check",
+                docker_image=docker_image,
+                config=config,
+            )
         return run_onboarding_aca_job(
             action="check",
             docker_image=docker_image,
@@ -76,11 +116,18 @@ def docker_discover_streams(
     docker_image: str, config: dict[str, Any]
 ) -> tuple[bool, list[str], str]:
     if _use_azure_job_mode():
-        ok, msg = run_onboarding_aca_job(
-            action="discover",
-            docker_image=docker_image,
-            config=config,
-        )
+        if _should_use_docker_native(docker_image):
+            ok, msg = run_onboarding_docker_native_job(
+                action="discover",
+                docker_image=docker_image,
+                config=config,
+            )
+        else:
+            ok, msg = run_onboarding_aca_job(
+                action="discover",
+                docker_image=docker_image,
+                config=config,
+            )
         # In azure_job mode, stream names are expected to be persisted/reported by the
         # dedicated onboarding worker. For now we only surface execution-level success.
         return ok, [], msg
@@ -148,11 +195,18 @@ def docker_discover_catalog(
     docker_image: str, config: dict[str, Any]
 ) -> tuple[bool, dict[str, Any] | None, str]:
     if _use_azure_job_mode():
-        ok, msg = run_onboarding_aca_job(
-            action="discover_catalog",
-            docker_image=docker_image,
-            config=config,
-        )
+        if _should_use_docker_native(docker_image):
+            ok, msg = run_onboarding_docker_native_job(
+                action="discover_catalog",
+                docker_image=docker_image,
+                config=config,
+            )
+        else:
+            ok, msg = run_onboarding_aca_job(
+                action="discover_catalog",
+                docker_image=docker_image,
+                config=config,
+            )
         return ok, None, msg
     """Run ``discover`` and return the Airbyte ``catalog`` dict from the first CATALOG message."""
     clean = _clean_connector_config(config)
@@ -286,14 +340,24 @@ def docker_read_probe(
     Success means the connector process exited 0 and no ERROR line (or LOG level ERROR) was parsed.
     """
     if _use_azure_job_mode():
-        ok, msg = run_onboarding_aca_job(
-            action="read_probe",
-            docker_image=docker_image,
-            config=config,
-            streams=stream_names,
-            max_streams=max_streams,
-            read_timeout=read_timeout,
-        )
+        if _should_use_docker_native(docker_image):
+            ok, msg = run_onboarding_docker_native_job(
+                action="read_probe",
+                docker_image=docker_image,
+                config=config,
+                streams=stream_names,
+                max_streams=max_streams,
+                read_timeout=read_timeout,
+            )
+        else:
+            ok, msg = run_onboarding_aca_job(
+                action="read_probe",
+                docker_image=docker_image,
+                config=config,
+                streams=stream_names,
+                max_streams=max_streams,
+                read_timeout=read_timeout,
+            )
         return ok, 0, msg, ""
 
     ok, catalog, dmsg = docker_discover_catalog(docker_image, config)

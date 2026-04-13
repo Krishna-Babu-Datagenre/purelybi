@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 from azure.identity import DefaultAzureCredential
@@ -12,10 +13,13 @@ from azure.identity import DefaultAzureCredential
 from fastapi_app.settings import (
     ONBOARDING_ACA_JOB_CONTAINER_NAME,
     ONBOARDING_ACA_JOB_NAME,
+    ONBOARDING_ACA_DOCKER_JOB_NAME,
+    ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME,
     ONBOARDING_ACA_POLL_INTERVAL_SECONDS,
     ONBOARDING_ACA_RESOURCE_GROUP,
     ONBOARDING_ACA_SUBSCRIPTION_ID,
     ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS,
+    DOCKER_IMAGE_LANGUAGES,
 )
 
 logger = logging.getLogger(__name__)
@@ -235,3 +239,155 @@ def run_onboarding_aca_job(
     except Exception as exc:
         logger.exception("Onboarding ACA job execution failed")
         return False, f"ACA onboarding job invocation failed: {type(exc).__name__}: {exc}"
+
+
+# ── Docker-native onboarding (official Airbyte images) ────────────────
+
+
+def _get_docker_job_execution(client: Any, execution_name: str) -> Any:
+    """Poll execution status on the Docker connector ACA Job."""
+    job_exec_fn = getattr(client, "job_execution", None)
+    if callable(job_exec_fn):
+        return job_exec_fn(
+            resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
+            job_name=ONBOARDING_ACA_DOCKER_JOB_NAME,
+            job_execution_name=execution_name,
+        )
+    for attr in ("job_executions", "jobs_executions"):
+        ops = getattr(client, attr, None)
+        getter = getattr(ops, "get", None) if ops else None
+        if callable(getter):
+            return getter(
+                resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
+                job_name=ONBOARDING_ACA_DOCKER_JOB_NAME,
+                job_execution_name=execution_name,
+            )
+    raise RuntimeError("No supported ACA job execution getter found")
+
+
+def run_onboarding_docker_native_job(
+    *,
+    action: str,
+    docker_image: str,
+    config: dict[str, Any],
+    streams: list[str] | None = None,
+    max_streams: int | None = None,
+    read_timeout: int | None = None,
+) -> tuple[bool, str]:
+    """Run onboarding check/discover using the official Airbyte Docker image.
+
+    Instead of PyAirbyte (which can't install Java connectors and is slow for
+    Python connectors), this launches the official connector image on the
+    Docker-native ACA Job and reads the Airbyte-protocol output from the
+    shared Azure File Share.
+
+    Supported actions: ``check``, ``discover``, ``discover_catalog``.
+    ``read_probe`` falls back to the PyAirbyte path via ``run_onboarding_aca_job``.
+    """
+    if not ONBOARDING_ACA_DOCKER_JOB_NAME:
+        return (
+            False,
+            "ONBOARDING_ACA_DOCKER_JOB_NAME (or ACA_DOCKER_JOB_NAME) is not set.",
+        )
+
+    if action not in ("check", "discover", "discover_catalog"):
+        # read_probe is complex (needs configured catalog); delegate to PyAirbyte path.
+        return run_onboarding_aca_job(
+            action=action,
+            docker_image=docker_image,
+            config=config,
+            streams=streams,
+            max_streams=max_streams,
+            read_timeout=read_timeout,
+        )
+
+    try:
+        from azure.mgmt.appcontainers import ContainerAppsAPIClient
+    except Exception:
+        return False, "azure-mgmt-appcontainers is required."
+
+    # Map action to Airbyte CLI command
+    cli_command = "check" if action == "check" else "discover"
+
+    # Unique work dir on the shared File Share
+    job_id = uuid.uuid4().hex[:12]
+    work_dir = f"onboarding-{job_id}"
+
+    # Clean config (strip internal __ keys)
+    clean_config = {k: v for k, v in config.items() if not str(k).startswith("__")}
+
+    try:
+        credential = DefaultAzureCredential()
+        client = ContainerAppsAPIClient(credential, ONBOARDING_ACA_SUBSCRIPTION_ID)
+
+        # The shell script:
+        #   1. Writes config.json from the env var to the File Share
+        #   2. Runs the connector CLI command
+        #   3. Captures stdout (Airbyte protocol JSONL) to the File Share
+        config_json_escaped = json.dumps(json.dumps(clean_config, default=str))
+
+        shell_script = (
+            f"mkdir -p /data/{work_dir} && "
+            f"echo {config_json_escaped} > /data/{work_dir}/config.json && "
+            f"{cli_command} --config /data/{work_dir}/config.json "
+            f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log ; "
+            f"echo $? > /data/{work_dir}/exit_code"
+        )
+
+        container_override = {
+            "name": ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME,
+            "image": docker_image,
+            "command": ["/bin/sh"],
+            "args": ["-c", shell_script],
+            "env": [
+                {"name": "AIRBYTE_ENABLE_UNSAFE_CODE", "value": "true"},
+            ],
+        }
+
+        logger.info(
+            "Starting Docker-native onboarding job '%s' (image=%s, action=%s, work_dir=%s)",
+            ONBOARDING_ACA_DOCKER_JOB_NAME,
+            docker_image,
+            action,
+            work_dir,
+        )
+
+        result = client.jobs.begin_start(
+            resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
+            job_name=ONBOARDING_ACA_DOCKER_JOB_NAME,
+            template={"containers": [container_override]},
+        ).result()
+
+        execution_name = _extract_execution_name(result)
+        if not execution_name:
+            return False, "Docker-native ACA job start returned no execution name."
+
+        # Poll until terminal status
+        deadline = time.time() + max(10, ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS)
+        terminal_success = {"succeeded", "completed", "success"}
+        terminal_failed = {"failed", "canceled", "cancelled", "stopped", "error"}
+
+        while time.time() < deadline:
+            execution = _get_docker_job_execution(client, execution_name)
+            status = _extract_execution_status(execution).strip().lower()
+            if status in terminal_success:
+                return (
+                    True,
+                    f"Docker-native onboarding {action} succeeded ({execution_name}).",
+                )
+            if status in terminal_failed:
+                return (
+                    False,
+                    f"Docker-native onboarding {action} failed with status '{status}' ({execution_name}).",
+                )
+            time.sleep(max(1, ONBOARDING_ACA_POLL_INTERVAL_SECONDS))
+
+        return (
+            False,
+            f"Docker-native onboarding job timed out after {ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS}s "
+            f"(execution={execution_name}).",
+        )
+
+    except Exception as exc:
+        logger.exception("Docker-native onboarding job failed")
+        return False, f"Docker-native onboarding failed: {type(exc).__name__}: {exc}"

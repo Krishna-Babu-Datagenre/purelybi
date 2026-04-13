@@ -4,8 +4,20 @@ Checks each user's connector configs in Supabase. For any that are due
 for a sync (based on last_sync_at and sync_frequency_minutes), it queues
 an Azure Container Apps job to run the actual data extraction.
 
+Two execution paths depending on the connector language
+(stored in ``connector_schemas.language``):
+
+  Python / manifest-only connectors
+    → Single-phase: run the ``sync-worker`` image, execute via PyAirbyte.
+  Java connectors (e.g. source-mongodb-v2)
+    → Phase 1: run the **official Airbyte Docker image** directly as an ACA job.
+               The entrypoint runs ``read --config --catalog`` and dumps
+               Airbyte protocol JSONL to an Azure File Share (``/output/``).
+    → Phase 2: run ``sync-worker`` in ``DOCKER_PHASE2`` mode to parse
+               the JSONL output, convert to Parquet, and upload to Blob.
+
 Flow:
-  Timer fires → Query eligible configs → Start ACA job per config → Update status
+  Timer fires → Query eligible configs → Detect language → Start ACA job → Update status
 """
 
 import logging
@@ -31,6 +43,19 @@ ACA_JOB_NAME = os.environ[
 # Must match the container *name* in the Job template (portal often uses the job name).
 # If this does not match, begin_start env overrides are ignored and SYNC_* vars are missing.
 ACA_JOB_CONTAINER_NAME = os.environ.get("ACA_JOB_CONTAINER_NAME", "sync-worker")
+
+# Separate ACA Job for running official Airbyte Docker images (Java connectors).
+# Template must allow image override and mount the shared Azure File Share at /output.
+ACA_DOCKER_JOB_NAME = os.environ.get("ACA_DOCKER_JOB_NAME", "")
+ACA_DOCKER_JOB_CONTAINER_NAME = os.environ.get(
+    "ACA_DOCKER_JOB_CONTAINER_NAME", "connector"
+)
+
+# Languages that use the official Docker image instead of PyAirbyte pip install.
+# - java: no PyPI package exists, Docker image is the only option
+# - python: PyPI package exists but install takes 30-90s per job; Docker image is instant
+# manifest-only connectors are excluded: they just download a YAML file (~1-2s).
+DOCKER_IMAGE_LANGUAGES = {"java", "python"}
 
 
 def get_supabase() -> Client:
@@ -131,10 +156,25 @@ def get_eligible_configs(supabase: Client) -> list[dict]:
         .execute()
     )
 
+    # Build lookup: docker_repository → language from connector_schemas
+    repos = list({c["docker_repository"] for c in response.data if c.get("docker_repository")})
+    language_map: dict[str, str] = {}
+    if repos:
+        schema_rows = (
+            supabase.table("connector_schemas")
+            .select("docker_repository, language")
+            .in_("docker_repository", repos)
+            .execute()
+        ).data or []
+        language_map = {r["docker_repository"]: r.get("language", "unknown") for r in schema_rows}
+
     eligible = []
     for config in response.data:
         freq_minutes = config.get("sync_frequency_minutes", 360)
         last_sync = config.get("last_sync_at")
+
+        # Attach language for routing decisions downstream
+        config["_language"] = language_map.get(config.get("docker_repository", ""), "unknown")
 
         if last_sync is None:
             # Never synced — always eligible
@@ -162,12 +202,24 @@ def start_container_job(
 ) -> str | None:
     """Start an Azure Container Apps job execution for a single sync.
 
-    The ACA job runs the sync_worker Docker image with the user's config.
-    Environment variables pass the Supabase credentials so the worker can
-    read/write configs and upload data.
+    Routes based on connector language:
+      - ``java`` → Docker-native two-phase via ``ACA_DOCKER_JOB_NAME``
+      - everything else → existing ``sync-worker`` via ``ACA_JOB_NAME``
 
     Returns the execution name if started, None on failure.
     """
+    language = config.get("_language", "unknown")
+
+    if language in DOCKER_IMAGE_LANGUAGES:
+        return _start_docker_native_job(config, credential)
+    return _start_pyairbyte_job(config, credential)
+
+
+def _start_pyairbyte_job(
+    config: dict,
+    credential: DefaultAzureCredential,
+) -> str | None:
+    """Start the sync-worker ACA job (PyAirbyte — Python / manifest connectors)."""
     client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
     container_name, container_image, base_env = resolve_job_container(client)
 
@@ -175,8 +227,6 @@ def start_container_job(
     connector_name = config["connector_name"]
     config_id = config["id"]
 
-    # begin_start(template=...) expects JobExecutionTemplate shape directly.
-    # If wrapped inside {"template": ...}, SDK serializes unknown fields away.
     env_by_name = {entry["name"]: entry for entry in base_env if "name" in entry}
     env_by_name["SYNC_CONFIG_ID"] = {"name": "SYNC_CONFIG_ID", "value": config_id}
     env_by_name["SYNC_USER_ID"] = {"name": "SYNC_USER_ID", "value": user_id}
@@ -205,7 +255,7 @@ def start_container_job(
 
     try:
         logger.info(
-            "Starting ACA job=%s with container=%s image=%s and SYNC_CONFIG_ID=%s",
+            "Starting PyAirbyte ACA job=%s container=%s image=%s SYNC_CONFIG_ID=%s",
             ACA_JOB_NAME,
             container_name,
             container_image or "<unchanged>",
@@ -219,7 +269,7 @@ def start_container_job(
 
         execution_name = getattr(result, "name", "unknown")
         logger.info(
-            "Started ACA job for user=%s connector=%s execution=%s",
+            "Started PyAirbyte job for user=%s connector=%s execution=%s",
             user_id,
             connector_name,
             execution_name,
@@ -227,7 +277,124 @@ def start_container_job(
         return execution_name
     except Exception:
         logger.exception(
-            "Failed to start ACA job for user=%s connector=%s",
+            "Failed to start PyAirbyte job for user=%s connector=%s",
+            user_id,
+            connector_name,
+        )
+        return None
+
+
+def _start_docker_native_job(
+    config: dict,
+    credential: DefaultAzureCredential,
+) -> str | None:
+    """Start a two-phase ACA job for Docker-only (Java) connectors.
+
+    Phase 1 — Run the official Airbyte connector image directly.
+              The orchestrator overrides the image to the official Docker Hub image
+              (e.g. ``airbyte/source-mongodb-v2:6.6.4``) and injects env vars with
+              the user config, catalog, and output path.  The ACA job template must
+              have an Azure File Share mounted at ``/output``.
+
+              The entrypoint is overridden to write Airbyte-protocol JSONL into the
+              shared volume so that Phase 2 can parse it.
+
+    Phase 2 — A follow-up ``sync-worker`` job reads the JSONL from the File Share,
+              converts to Parquet, and uploads to Blob Storage.  This is triggered
+              only after Phase 1 succeeds (currently via the orchestrator polling
+              or a future event-driven mechanism).
+
+    For now, we run Phase 1 only and set ``SYNC_PHASE=docker_read``.  The
+    ``sync-worker`` Phase 2 is launched by the worker itself at the end of Phase 1.
+    """
+    if not ACA_DOCKER_JOB_NAME:
+        logger.error(
+            "ACA_DOCKER_JOB_NAME is not set — cannot run Docker-native job for %s",
+            config.get("docker_image"),
+        )
+        return None
+
+    client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
+
+    user_id = config["user_id"]
+    connector_name = config["connector_name"]
+    config_id = config["id"]
+    docker_image = config["docker_image"]  # e.g. "airbyte/source-mongodb-v2:6.6.4"
+
+    # Phase 1 runs the sync-worker image with SYNC_PHASE=docker_read.
+    # The sync-worker will:
+    #   1. Write the connector config + catalog to /output/<config_id>/
+    #   2. Invoke the official Airbyte Docker connector as a subprocess
+    #      (not possible — no Docker daemon).
+    #
+    # Instead, we run the sync-worker which:
+    #   1. Writes config.json to the File Share
+    #   2. Writes catalog.json after a discover call
+    #   3. Starts a *second* ACA job using the official image
+    #   4. Polls until it completes
+    #   5. Reads the JSONL output and converts to Parquet
+    #
+    # Actually, the cleanest approach is: the orchestrator launches the official
+    # image DIRECTLY with the correct command + config, and then launches Phase 2.
+    # But to keep it simple and avoid needing the orchestrator to wait, we use
+    # a wrapper approach: sync-worker handles everything.
+
+    # Resolve base env/image from the Docker job template
+    try:
+        job = client.jobs.get(
+            resource_group_name=AZURE_RESOURCE_GROUP,
+            job_name=ACA_DOCKER_JOB_NAME,
+        )
+        containers = getattr(getattr(job, "template", None), "containers", None)
+        if containers:
+            first = containers[0]
+            base_container_name = getattr(first, "name", None) or ACA_DOCKER_JOB_CONTAINER_NAME
+        else:
+            base_container_name = ACA_DOCKER_JOB_CONTAINER_NAME
+    except Exception:
+        logger.warning("Could not resolve Docker job template; using defaults")
+        base_container_name = ACA_DOCKER_JOB_CONTAINER_NAME
+
+    env_list = [
+        {"name": "SYNC_CONFIG_ID", "value": config_id},
+        {"name": "SYNC_USER_ID", "value": user_id},
+        {"name": "SYNC_CONNECTOR_NAME", "value": connector_name},
+        {"name": "SYNC_PHASE", "value": "docker_read"},
+        {"name": "SYNC_DOCKER_IMAGE", "value": docker_image},
+        {"name": "SUPABASE_URL", "value": SUPABASE_URL},
+        {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": SUPABASE_SERVICE_KEY},
+    ]
+
+    container_override = {
+        "name": str(base_container_name),
+        "env": env_list,
+    }
+
+    try:
+        logger.info(
+            "Starting Docker-native ACA job=%s image=sync-worker (SYNC_PHASE=docker_read) "
+            "for connector_image=%s config_id=%s",
+            ACA_DOCKER_JOB_NAME,
+            docker_image,
+            config_id,
+        )
+        result = client.jobs.begin_start(
+            resource_group_name=AZURE_RESOURCE_GROUP,
+            job_name=ACA_DOCKER_JOB_NAME,
+            template={"containers": [container_override]},
+        ).result()
+
+        execution_name = getattr(result, "name", "unknown")
+        logger.info(
+            "Started Docker-native job for user=%s connector=%s execution=%s",
+            user_id,
+            connector_name,
+            execution_name,
+        )
+        return execution_name
+    except Exception:
+        logger.exception(
+            "Failed to start Docker-native job for user=%s connector=%s",
             user_id,
             connector_name,
         )

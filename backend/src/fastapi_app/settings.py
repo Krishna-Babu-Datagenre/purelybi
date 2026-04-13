@@ -83,3 +83,16 @@ ONBOARDING_ACA_POLL_INTERVAL_SECONDS: int = int(
 ONBOARDING_DOCKER_READ_TIMEOUT: int = int(_env("ONBOARDING_DOCKER_READ_TIMEOUT", "300") or "300")
 ONBOARDING_DOCKER_READ_STREAM_CAP: int = int(_env("ONBOARDING_DOCKER_READ_STREAM_CAP", "3") or "3")
 ONBOARDING_RATE_LIMIT_PER_MIN: int = int(_env("ONBOARDING_RATE_LIMIT_PER_MIN", "40") or "40")
+
+# Docker-native connector ACA Job (for Java/Python connectors using official images)
+ONBOARDING_ACA_DOCKER_JOB_NAME: str = _env(
+    "ONBOARDING_ACA_DOCKER_JOB_NAME",
+    _env("ACA_DOCKER_JOB_NAME"),
+)
+ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME: str = _env(
+    "ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME",
+    _env("ACA_DOCKER_JOB_CONTAINER_NAME", "connector"),
+)
+
+# Languages whose connectors must run via official Docker images (no PyPI package or slow install).
+DOCKER_IMAGE_LANGUAGES: set[str] = {"java", "python"}
