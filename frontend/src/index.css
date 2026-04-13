@@ -985,16 +985,56 @@ body {
    react-grid-layout — resize handles
 ───────────────────────────────────────────── */
 .react-resizable-handle {
+  position: absolute;
+  width: 0.875rem;
+  height: 0.875rem;
+  z-index: 30;
   opacity: 0;
+  pointer-events: auto;
   transition: opacity 0.15s ease;
 }
 .react-grid-item:hover .react-resizable-handle {
   opacity: 1;
 }
+.react-resizable-handle-e {
+  top: 50%;
+  right: -0.375rem;
+  margin-top: -0.4375rem;
+  cursor: ew-resize;
+}
+.react-resizable-handle-w {
+  top: 50%;
+  left: -0.375rem;
+  margin-top: -0.4375rem;
+  cursor: ew-resize;
+}
+.react-resizable-handle-s {
+  left: 50%;
+  bottom: -0.375rem;
+  margin-left: -0.4375rem;
+  cursor: ns-resize;
+}
+.react-resizable-handle-se {
+  right: -0.375rem;
+  bottom: -0.375rem;
+  cursor: nwse-resize;
+}
+.react-resizable-handle-sw {
+  left: -0.375rem;
+  bottom: -0.375rem;
+  cursor: nesw-resize;
+}
 .react-resizable-handle::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-style: solid;
   border-color: rgba(139, 92, 246, 0.7) !important;
   width: 0.4375rem !important;
   height: 0.4375rem !important;
+  border-width: 0.125rem;
+  border-radius: 9999px;
+  background: rgba(139, 92, 246, 0.08);
 }
 
 /* Drag placeholder */

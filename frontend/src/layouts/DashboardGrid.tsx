@@ -7,6 +7,7 @@ import WidgetContextMenu from '../components/WidgetContextMenu';
 import { computeAllLayouts, BREAKPOINT_COLS } from '../utils/layoutEngine';
 
 import 'react-grid-layout/css/styles.css';
+import 'react-resizable/css/styles.css';
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 

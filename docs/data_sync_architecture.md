@@ -86,6 +86,23 @@ Timer-triggered Azure Function (every 2 hours). Queries Supabase for eligible co
 - If `language ∈ {"java", "python"}` and `ACA_DOCKER_JOB_NAME` is set → starts sync-worker with `SYNC_PHASE=docker_read` + `SYNC_DOCKER_IMAGE`
 - Otherwise → starts sync-worker with default PyAirbyte path
 
+**Eligibility logic (start sync vs skip):**
+
+The orchestrator first filters to rows where:
+- `is_active = true`
+- `sync_validated = true`
+- `last_sync_status NOT IN ('queued', 'running', 'reauth_required')`
+
+Then per config:
+- `sync_mode = 'one_off'`
+  - eligible only when `last_sync_at IS NULL` (never synced yet)
+  - if `sync_start_at` is set, only eligible when `now >= sync_start_at`
+- `sync_mode = 'recurring'` (or missing/unknown; treated as recurring)
+  - if `last_sync_at IS NULL`: eligible immediately (or waits for `sync_start_at` if set)
+  - else: eligible when elapsed minutes since `last_sync_at` >= `sync_frequency_minutes`
+
+This keeps one-off connectors from re-running forever, and recurring connectors on cadence.
+
 **IAM:** Managed identity needs `Microsoft.App/jobs/start/action` on the sync-worker ACA Job (and the Docker connector ACA Job if used).
 
 ### 3. Sync Worker (`docker-image/`)
