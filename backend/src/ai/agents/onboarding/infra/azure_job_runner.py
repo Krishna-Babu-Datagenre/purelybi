@@ -267,8 +267,8 @@ def _get_docker_job_execution(client: Any, execution_name: str) -> Any:
     raise RuntimeError("No supported ACA job execution getter found")
 
 
-def _read_file_share_output(work_dir: str) -> str:
-    """Read ``output.jsonl`` from the shared Azure File Share."""
+def _read_file_share_file(work_dir: str, filename: str = "output.jsonl") -> str:
+    """Read a file from the shared Azure File Share."""
     if not AZURE_STORAGE_CONNECTION_STRING or not AZURE_FILE_SHARE_NAME:
         logger.warning("Cannot read File Share: missing connection string or share name")
         return ""
@@ -278,12 +278,12 @@ def _read_file_share_output(work_dir: str) -> str:
         file_client = ShareFileClient.from_connection_string(
             conn_str=AZURE_STORAGE_CONNECTION_STRING,
             share_name=AZURE_FILE_SHARE_NAME,
-            file_path=f"{work_dir}/output.jsonl",
+            file_path=f"{work_dir}/{filename}",
         )
         data = file_client.download_file()
         return data.readall().decode("utf-8", errors="replace")
     except Exception as exc:
-        logger.warning("Failed to read File Share output: %s", exc)
+        logger.warning("Failed to read File Share file %s/%s: %s", work_dir, filename, exc)
         return ""
 
 
@@ -358,6 +358,102 @@ def _parse_check_result(jsonl: str) -> tuple[bool | None, str]:
     return None, ""
 
 
+def _launch_docker_job_and_wait(
+    client: Any,
+    docker_image: str,
+    shell_script: str,
+    label: str,
+) -> tuple[bool, str, str]:
+    """Launch the Docker connector ACA Job and poll until terminal.
+
+    Returns ``(success, message, execution_name)``.
+    """
+    container_override = {
+        "name": ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME,
+        "image": docker_image,
+        "command": ["/bin/sh"],
+        "args": ["-c", shell_script],
+        "env": [
+            {"name": "AIRBYTE_ENABLE_UNSAFE_CODE", "value": "true"},
+        ],
+    }
+
+    logger.info(
+        "Starting Docker-native onboarding job '%s' (image=%s, label=%s)",
+        ONBOARDING_ACA_DOCKER_JOB_NAME,
+        docker_image,
+        label,
+    )
+
+    result = client.jobs.begin_start(
+        resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
+        job_name=ONBOARDING_ACA_DOCKER_JOB_NAME,
+        template={"containers": [container_override]},
+    ).result()
+
+    execution_name = _extract_execution_name(result)
+    if not execution_name:
+        return False, f"{label}: no execution name returned", ""
+
+    deadline = time.time() + max(10, ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS)
+    terminal_success = {"succeeded", "completed", "success"}
+    terminal_failed = {"failed", "canceled", "cancelled", "stopped", "error"}
+
+    while time.time() < deadline:
+        execution = _get_docker_job_execution(client, execution_name)
+        status = _extract_execution_status(execution).strip().lower()
+        if status in terminal_success:
+            return True, f"{label} succeeded ({execution_name})", execution_name
+        if status in terminal_failed:
+            return (
+                False,
+                f"{label} failed with status '{status}' ({execution_name})",
+                execution_name,
+            )
+        time.sleep(max(1, ONBOARDING_ACA_POLL_INTERVAL_SECONDS))
+
+    return (
+        False,
+        f"{label} timed out after {ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS}s ({execution_name})",
+        execution_name,
+    )
+
+
+def _build_configured_catalog(
+    raw_catalog: dict[str, Any],
+    selected_streams: list[str],
+) -> dict[str, Any]:
+    """Build a ConfiguredAirbyteCatalog from a real discover catalog.
+
+    Uses the full stream definitions (including ``json_schema``, ``namespace``,
+    etc.) so connectors that validate the catalog (e.g. MongoDB) don't crash.
+    """
+    name_set = set(selected_streams)
+    streams_out: list[dict[str, Any]] = []
+    for stream_obj in raw_catalog.get("streams", []) or []:
+        if not isinstance(stream_obj, dict):
+            continue
+        name = stream_obj.get("name")
+        if name not in name_set:
+            continue
+        modes = stream_obj.get("supported_sync_modes") or ["full_refresh"]
+        sync_mode = "full_refresh" if "full_refresh" in modes else str(modes[0])
+        cursor_field: list[str] = []
+        if sync_mode != "full_refresh":
+            dc = stream_obj.get("default_cursor_field")
+            if isinstance(dc, list):
+                cursor_field = [str(x) for x in dc]
+        streams_out.append(
+            {
+                "stream": stream_obj,
+                "sync_mode": sync_mode,
+                "destination_sync_mode": "overwrite",
+                "cursor_field": cursor_field,
+            }
+        )
+    return {"streams": streams_out}
+
+
 def run_onboarding_docker_native_job(
     *,
     action: str,
@@ -405,14 +501,6 @@ def run_onboarding_docker_native_job(
     except Exception:
         return False, "azure-mgmt-appcontainers is required.", []
 
-    # Map action → Airbyte CLI sub-command
-    if action == "read_probe":
-        cli_command = "read"
-    elif action in ("discover", "discover_catalog"):
-        cli_command = "discover"
-    else:
-        cli_command = "check"
-
     # Unique work dir on the shared File Share
     job_id = uuid.uuid4().hex[:12]
     work_dir = f"onboarding-{job_id}"
@@ -421,119 +509,77 @@ def run_onboarding_docker_native_job(
     clean_config = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     try:
-        # ── 1. Write config (and catalog) to File Share from the backend ──
+        # Write config to File Share from the backend
         _write_file_share(work_dir, "config.json", json.dumps(clean_config, default=str))
         logger.info("Wrote config.json to File Share: %s/config.json", work_dir)
 
+        credential = DefaultAzureCredential()
+        client = ContainerAppsAPIClient(credential, ONBOARDING_ACA_SUBSCRIPTION_ID)
+
         if action == "read_probe":
+            # ── Phase 1: discover to get the real catalog ──
+            discover_script = (
+                f"$AIRBYTE_ENTRYPOINT discover "
+                f"--config /data/{work_dir}/config.json "
+                f"> /data/{work_dir}/discover.jsonl 2>/data/{work_dir}/stderr_discover.log"
+            )
+            ok, msg, _exec = _launch_docker_job_and_wait(
+                client, docker_image, discover_script, "read_probe/discover",
+            )
+            if not ok:
+                return False, f"read_probe discover phase failed: {msg}", []
+
+            # Parse the real catalog from discover output
+            discover_jsonl = _read_file_share_file(work_dir, "discover.jsonl")
+            discovered_names, raw_catalog = _parse_catalog_streams(discover_jsonl)
+            if not raw_catalog or not raw_catalog.get("streams"):
+                return False, "read_probe: discover produced no catalog or no streams", []
+
+            # Build configured catalog from real stream definitions
             effective_max = max_streams or 3
-            selected_streams = (streams or [])[:effective_max]
-            configured_catalog = {
-                "streams": [
-                    {
-                        "stream": {
-                            "name": s,
-                            "json_schema": {},
-                            "supported_sync_modes": ["full_refresh"],
-                        },
-                        "sync_mode": "full_refresh",
-                        "destination_sync_mode": "overwrite",
-                    }
-                    for s in selected_streams
-                ]
-            }
+            selected = (streams or discovered_names)[:effective_max]
+            configured_catalog = _build_configured_catalog(raw_catalog, selected)
+            if not configured_catalog.get("streams"):
+                return False, "read_probe: no matching streams found in catalog", []
+
             _write_file_share(work_dir, "catalog.json", json.dumps(configured_catalog, default=str))
 
-        # ── 2. Build shell script ──
-        # Airbyte connector images set $AIRBYTE_ENTRYPOINT to the actual
-        # binary/script (e.g. /airbyte/bin/source-mongodb-v2). We use that
-        # so we don't need to know the exact path per connector.
-        #
-        # The File Share is expected to be mounted at /data on the ACA Job.
-        if action == "read_probe":
-            shell_script = (
-                f"$AIRBYTE_ENTRYPOINT {cli_command} "
+            # ── Phase 2: read with the real catalog ──
+            read_script = (
+                f"$AIRBYTE_ENTRYPOINT read "
                 f"--config /data/{work_dir}/config.json "
                 f"--catalog /data/{work_dir}/catalog.json "
                 f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log"
             )
+            ok, msg, _exec = _launch_docker_job_and_wait(
+                client, docker_image, read_script, "read_probe/read",
+            )
+            return ok, msg, []
+
         else:
+            # ── check / discover: single-phase ──
+            if action in ("discover", "discover_catalog"):
+                cli_command = "discover"
+            else:
+                cli_command = "check"
+
             shell_script = (
                 f"$AIRBYTE_ENTRYPOINT {cli_command} "
                 f"--config /data/{work_dir}/config.json "
                 f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log"
             )
 
-        # ── 3. Launch the ACA Job ──
-        credential = DefaultAzureCredential()
-        client = ContainerAppsAPIClient(credential, ONBOARDING_ACA_SUBSCRIPTION_ID)
+            ok, msg, _exec = _launch_docker_job_and_wait(
+                client, docker_image, shell_script, action,
+            )
 
-        container_override = {
-            "name": ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME,
-            "image": docker_image,
-            "command": ["/bin/sh"],
-            "args": ["-c", shell_script],
-            "env": [
-                {"name": "AIRBYTE_ENABLE_UNSAFE_CODE", "value": "true"},
-            ],
-        }
+            discovered: list[str] = []
+            if ok and action in ("discover", "discover_catalog"):
+                jsonl = _read_file_share_file(work_dir)
+                discovered, _catalog = _parse_catalog_streams(jsonl)
+                msg = f"{msg}. Discovered {len(discovered)} streams."
 
-        logger.info(
-            "Starting Docker-native onboarding job '%s' (image=%s, action=%s, work_dir=%s)",
-            ONBOARDING_ACA_DOCKER_JOB_NAME,
-            docker_image,
-            action,
-            work_dir,
-        )
-
-        result = client.jobs.begin_start(
-            resource_group_name=ONBOARDING_ACA_RESOURCE_GROUP,
-            job_name=ONBOARDING_ACA_DOCKER_JOB_NAME,
-            template={"containers": [container_override]},
-        ).result()
-
-        execution_name = _extract_execution_name(result)
-        if not execution_name:
-            return False, "Docker-native ACA job start returned no execution name.", []
-
-        # Poll until terminal status
-        deadline = time.time() + max(10, ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS)
-        terminal_success = {"succeeded", "completed", "success"}
-        terminal_failed = {"failed", "canceled", "cancelled", "stopped", "error"}
-
-        while time.time() < deadline:
-            execution = _get_docker_job_execution(client, execution_name)
-            status = _extract_execution_status(execution).strip().lower()
-            if status in terminal_success:
-                # Job succeeded — read output from File Share and parse results
-                discovered: list[str] = []
-                if action in ("discover", "discover_catalog"):
-                    jsonl = _read_file_share_output(work_dir)
-                    discovered, _catalog = _parse_catalog_streams(jsonl)
-                    msg = (
-                        f"Docker-native onboarding {action} succeeded "
-                        f"({execution_name}). Discovered {len(discovered)} streams."
-                    )
-                else:
-                    msg = (
-                        f"Docker-native onboarding {action} succeeded "
-                        f"({execution_name})."
-                    )
-                return True, msg, discovered
-            if status in terminal_failed:
-                return (
-                    False,
-                    f"Docker-native onboarding {action} failed with status '{status}' ({execution_name}).",
-                    [],
-                )
-            time.sleep(max(1, ONBOARDING_ACA_POLL_INTERVAL_SECONDS))
-
-        return (
-            False,
-            f"Docker-native onboarding job timed out after {ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS}s "
-            f"(execution={execution_name}).",
-            [],
-        )
+            return ok, msg, discovered
 
     except Exception as exc:
         logger.exception("Docker-native onboarding job failed")
