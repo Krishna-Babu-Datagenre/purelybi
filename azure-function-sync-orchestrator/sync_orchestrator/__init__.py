@@ -288,24 +288,13 @@ def _start_docker_native_job(
     config: dict,
     credential: DefaultAzureCredential,
 ) -> str | None:
-    """Start a two-phase ACA job for Docker-only (Java) connectors.
+    """Start a two-phase ACA job for Docker-only (Java/Python) connectors.
 
-    Phase 1 — Run the official Airbyte connector image directly.
-              The orchestrator overrides the image to the official Docker Hub image
-              (e.g. ``airbyte/source-mongodb-v2:6.6.4``) and injects env vars with
-              the user config, catalog, and output path.  The ACA job template must
-              have an Azure File Share mounted at ``/output``.
-
-              The entrypoint is overridden to write Airbyte-protocol JSONL into the
-              shared volume so that Phase 2 can parse it.
-
-    Phase 2 — A follow-up ``sync-worker`` job reads the JSONL from the File Share,
-              converts to Parquet, and uploads to Blob Storage.  This is triggered
-              only after Phase 1 succeeds (currently via the orchestrator polling
-              or a future event-driven mechanism).
-
-    For now, we run Phase 1 only and set ``SYNC_PHASE=docker_read``.  The
-    ``sync-worker`` Phase 2 is launched by the worker itself at the end of Phase 1.
+    This runs the **sync-worker** image on the standard sync ACA job
+    (``ACA_JOB_NAME``) with ``SYNC_PHASE=docker_read``.  The sync-worker then
+    internally launches the official Airbyte connector image on the Docker
+    connector ACA job (``ACA_DOCKER_JOB_NAME``) and orchestrates the whole
+    discover → read → Parquet → Blob pipeline.
     """
     if not ACA_DOCKER_JOB_NAME:
         logger.error(
@@ -314,73 +303,55 @@ def _start_docker_native_job(
         )
         return None
 
+    # We run the sync-worker on the standard sync job (same image, same volume
+    # mounts, same secrets).  Only SYNC_PHASE + SYNC_DOCKER_IMAGE differentiate.
     client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
+    container_name, container_image, base_env = resolve_job_container(client)
 
     user_id = config["user_id"]
     connector_name = config["connector_name"]
     config_id = config["id"]
     docker_image = config["docker_image"]  # e.g. "airbyte/source-mongodb-v2:6.6.4"
 
-    # Phase 1 runs the sync-worker image with SYNC_PHASE=docker_read.
-    # The sync-worker will:
-    #   1. Write the connector config + catalog to /output/<config_id>/
-    #   2. Invoke the official Airbyte Docker connector as a subprocess
-    #      (not possible — no Docker daemon).
-    #
-    # Instead, we run the sync-worker which:
-    #   1. Writes config.json to the File Share
-    #   2. Writes catalog.json after a discover call
-    #   3. Starts a *second* ACA job using the official image
-    #   4. Polls until it completes
-    #   5. Reads the JSONL output and converts to Parquet
-    #
-    # Actually, the cleanest approach is: the orchestrator launches the official
-    # image DIRECTLY with the correct command + config, and then launches Phase 2.
-    # But to keep it simple and avoid needing the orchestrator to wait, we use
-    # a wrapper approach: sync-worker handles everything.
-
-    # Resolve base env/image from the Docker job template
-    try:
-        job = client.jobs.get(
-            resource_group_name=AZURE_RESOURCE_GROUP,
-            job_name=ACA_DOCKER_JOB_NAME,
-        )
-        containers = getattr(getattr(job, "template", None), "containers", None)
-        if containers:
-            first = containers[0]
-            base_container_name = getattr(first, "name", None) or ACA_DOCKER_JOB_CONTAINER_NAME
-        else:
-            base_container_name = ACA_DOCKER_JOB_CONTAINER_NAME
-    except Exception:
-        logger.warning("Could not resolve Docker job template; using defaults")
-        base_container_name = ACA_DOCKER_JOB_CONTAINER_NAME
-
-    env_list = [
-        {"name": "SYNC_CONFIG_ID", "value": config_id},
-        {"name": "SYNC_USER_ID", "value": user_id},
-        {"name": "SYNC_CONNECTOR_NAME", "value": connector_name},
-        {"name": "SYNC_PHASE", "value": "docker_read"},
-        {"name": "SYNC_DOCKER_IMAGE", "value": docker_image},
-        {"name": "SUPABASE_URL", "value": SUPABASE_URL},
-        {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": SUPABASE_SERVICE_KEY},
-    ]
+    env_by_name = {entry["name"]: entry for entry in base_env if "name" in entry}
+    env_by_name["SYNC_CONFIG_ID"] = {"name": "SYNC_CONFIG_ID", "value": config_id}
+    env_by_name["SYNC_USER_ID"] = {"name": "SYNC_USER_ID", "value": user_id}
+    env_by_name["SYNC_CONNECTOR_NAME"] = {
+        "name": "SYNC_CONNECTOR_NAME",
+        "value": connector_name,
+    }
+    env_by_name["SYNC_PHASE"] = {"name": "SYNC_PHASE", "value": "docker_read"}
+    env_by_name["SYNC_DOCKER_IMAGE"] = {"name": "SYNC_DOCKER_IMAGE", "value": docker_image}
+    env_by_name["SUPABASE_URL"] = {"name": "SUPABASE_URL", "value": SUPABASE_URL}
+    env_by_name["SUPABASE_SERVICE_ROLE_KEY"] = {
+        "name": "SUPABASE_SERVICE_ROLE_KEY",
+        "value": SUPABASE_SERVICE_KEY,
+    }
+    env_by_name["AIRBYTE_ENABLE_UNSAFE_CODE"] = {
+        "name": "AIRBYTE_ENABLE_UNSAFE_CODE",
+        "value": "true",
+    }
 
     container_override = {
-        "name": str(base_container_name),
-        "env": env_list,
+        "name": container_name,
+        "env": list(env_by_name.values()),
     }
+    if container_image:
+        container_override["image"] = container_image
 
     try:
         logger.info(
-            "Starting Docker-native ACA job=%s image=sync-worker (SYNC_PHASE=docker_read) "
-            "for connector_image=%s config_id=%s",
-            ACA_DOCKER_JOB_NAME,
+            "Starting Docker-native sync: job=%s container=%s image=%s "
+            "SYNC_PHASE=docker_read connector_image=%s config_id=%s",
+            ACA_JOB_NAME,
+            container_name,
+            container_image or "<unchanged>",
             docker_image,
             config_id,
         )
         result = client.jobs.begin_start(
             resource_group_name=AZURE_RESOURCE_GROUP,
-            job_name=ACA_DOCKER_JOB_NAME,
+            job_name=ACA_JOB_NAME,
             template={"containers": [container_override]},
         ).result()
 

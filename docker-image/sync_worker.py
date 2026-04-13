@@ -318,15 +318,39 @@ def _mark_failed(config_id: str, message: str) -> None:
 DOCKER_OUTPUT_BASE = Path(os.environ.get("DOCKER_OUTPUT_DIR", "/output"))
 
 
+def _parse_discover_output(discover_path: Path) -> dict | None:
+    """Parse Airbyte discover JSONL and return the raw catalog dict.
+
+    Looks for a ``{"type": "CATALOG", "catalog": {...}}`` message.
+    """
+    if not discover_path.exists():
+        return None
+    with open(discover_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") == "CATALOG":
+                return msg.get("catalog")
+    return None
+
+
 def _launch_connector_aca_job(
     docker_image: str,
     work_dir: Path,
     config_id: str,
+    *,
+    airbyte_command: str = "read",
+    output_file: str = "output.jsonl",
 ) -> str:
     """Launch the official Airbyte connector image as an ACA job.
 
-    The job reads config.json + catalog.json from ``work_dir`` and writes
-    Airbyte-protocol JSONL to ``work_dir/output.jsonl``.
+    *airbyte_command* is the Airbyte CLI verb (``read``, ``discover``, ``check``).
+    For ``read`` the catalog flag is included automatically.
 
     Returns the execution name.
     """
@@ -341,33 +365,32 @@ def _launch_connector_aca_job(
     credential = DefaultAzureCredential()
     client = ContainerAppsAPIClient(credential, subscription_id)
 
-    # The work_dir is a sub-folder of the shared Azure File Share.
-    # Relative path from the mount root so the connector image uses the same mount.
     rel_dir = work_dir.relative_to(DOCKER_OUTPUT_BASE)
 
-    # The connector image runs: <connector> read --config /data/config.json --catalog /data/catalog.json
-    # We override the command to redirect stdout to a JSONL file on the shared volume.
-    # The ACA Job template should mount the same File Share at /data.
+    # Build the shell command using $AIRBYTE_ENTRYPOINT (set in every
+    # official Airbyte image to point at the actual binary).
+    cmd_parts = [
+        f"$AIRBYTE_ENTRYPOINT {airbyte_command}",
+        f"--config /data/{rel_dir}/config.json",
+    ]
+    if airbyte_command == "read":
+        cmd_parts.append(f"--catalog /data/{rel_dir}/catalog.json")
+    cmd_parts.append(
+        f"> /data/{rel_dir}/{output_file} 2>/data/{rel_dir}/stderr.log || true"
+    )
+    shell_script = " ".join(cmd_parts)
+
     container_override = {
         "name": container_name,
         "image": docker_image,
         "command": ["/bin/sh"],
-        "args": [
-            "-c",
-            (
-                f"airbyte-connector read "
-                f"--config /data/{rel_dir}/config.json "
-                f"--catalog /data/{rel_dir}/catalog.json "
-                f"> /data/{rel_dir}/output.jsonl 2>/data/{rel_dir}/stderr.log "
-                f"|| true"
-            ),
-        ],
+        "args": ["-c", shell_script],
         "env": [
             {"name": "AIRBYTE_ENABLE_UNSAFE_CODE", "value": "true"},
         ],
     }
 
-    print(f"  Launching connector ACA job: {job_name} image={docker_image}")
+    print(f"  Launching connector ACA job: {job_name} image={docker_image} cmd={airbyte_command}")
     result = client.jobs.begin_start(
         resource_group_name=resource_group,
         job_name=job_name,
@@ -487,7 +510,7 @@ def run_docker_native_sync(config_id: str) -> None:
         sys.exit(1)
 
     # 1. Load config from Supabase
-    print(f"[1/6] Loading config {config_id} from Supabase...")
+    print(f"[1/7] Loading config {config_id} from Supabase...")
     row = load_config(config_id)
     if not row:
         print(f"ERROR: Config {config_id} not found")
@@ -508,7 +531,7 @@ def run_docker_native_sync(config_id: str) -> None:
 
     # 2. Refresh credentials
     if oauth_meta:
-        print("[2/6] Checking token freshness...")
+        print("[2/7] Checking token freshness...")
         try:
             raw_config, was_refreshed = ensure_fresh_credentials(raw_config, oauth_meta)
             if was_refreshed:
@@ -524,7 +547,7 @@ def run_docker_native_sync(config_id: str) -> None:
             print(f"  WARNING: Token refresh failed: {e}")
             print("  Attempting sync with existing credentials...")
     else:
-        print("[2/6] No OAuth metadata — skipping token refresh")
+        print("[2/7] No OAuth metadata — skipping token refresh")
 
     user_config = clean_config(raw_config)
 
@@ -534,38 +557,62 @@ def run_docker_native_sync(config_id: str) -> None:
 
     config_path = work_dir / "config.json"
     config_path.write_text(json.dumps(user_config, default=str))
-    print(f"[3/6] Wrote config to {config_path}")
+    print(f"[3/7] Wrote config to {config_path}")
 
-    # Build a minimal configured catalog for ``read``.
-    # For the initial run, we do full_refresh on all (or selected) streams.
-    # We need to discover streams first — use PyAirbyte just for discover (lightweight).
-    print("[3/6] Discovering streams via PyAirbyte (metadata only)...")
-    source_name = extract_source_name(docker_image)
+    # ── Phase 1: Discover via the official connector image ──────────
+    print(f"[4/7] Discovering streams via connector image: {docker_image}...")
     try:
-        source = ab.get_source(source_name, config=user_config, no_executor=True)
-        available = [str(s) for s in source.get_available_streams()]
-    except Exception:
-        # Fallback: if PyAirbyte can't even discover (expected for Java connectors
-        # without a PyPI package), use selected_streams from the DB or select all.
-        print("  PyAirbyte discover unavailable — using stored stream selection")
-        available = list(selected_streams) if selected_streams else []
+        discover_exec = _launch_connector_aca_job(
+            docker_image, work_dir, config_id,
+            airbyte_command="discover",
+            output_file="discover_output.jsonl",
+        )
+    except Exception as exc:
+        msg = f"Failed to launch discover job: {type(exc).__name__}: {exc}"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
 
+    discover_timeout = int(os.environ.get("DOCKER_JOB_TIMEOUT", "900"))
+    if not _wait_for_connector_job(discover_exec, timeout=discover_timeout):
+        stderr_path = work_dir / "stderr.log"
+        stderr_tail = ""
+        if stderr_path.exists():
+            stderr_tail = stderr_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+        msg = f"Discover job failed. stderr: {stderr_tail}"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
+
+    # Parse the CATALOG message from discover output
+    discover_path = work_dir / "discover_output.jsonl"
+    raw_catalog = _parse_discover_output(discover_path)
+    if not raw_catalog or not raw_catalog.get("streams"):
+        msg = "Discover produced no catalog / zero streams"
+        print(f"ERROR: {msg}")
+        _mark_failed(config_id, msg)
+        sys.exit(1)
+
+    all_stream_names = [
+        s["name"] for s in raw_catalog["streams"] if isinstance(s, dict) and s.get("name")
+    ]
+    print(f"  Discovered {len(all_stream_names)} stream(s)")
+
+    # Determine which streams to sync
     if selected_streams:
-        streams_to_sync = [s for s in selected_streams if not available or s in available]
+        streams_to_sync = [s for s in selected_streams if s in all_stream_names]
         if not streams_to_sync:
-            streams_to_sync = available or list(selected_streams)
+            streams_to_sync = list(selected_streams)
     else:
-        streams_to_sync = available
+        streams_to_sync = all_stream_names
 
-    # Write a ConfiguredAirbyteCatalog JSON
+    # Build ConfiguredAirbyteCatalog from the real discover output
+    stream_lookup = {s["name"]: s for s in raw_catalog["streams"] if isinstance(s, dict) and s.get("name")}
     configured_streams = []
     for stream_name in streams_to_sync:
+        real_stream = stream_lookup.get(stream_name, {"name": stream_name, "json_schema": {}, "supported_sync_modes": ["full_refresh"]})
         configured_streams.append({
-            "stream": {
-                "name": stream_name,
-                "json_schema": {},
-                "supported_sync_modes": ["full_refresh"],
-            },
+            "stream": real_stream,
             "sync_mode": "full_refresh",
             "destination_sync_mode": "overwrite",
         })
@@ -573,12 +620,16 @@ def run_docker_native_sync(config_id: str) -> None:
     catalog = {"streams": configured_streams}
     catalog_path = work_dir / "catalog.json"
     catalog_path.write_text(json.dumps(catalog, default=str))
-    print(f"  Wrote catalog ({len(configured_streams)} streams) to {catalog_path}")
+    print(f"  Wrote configured catalog ({len(configured_streams)} streams) to {catalog_path}")
 
-    # 4. Launch the official connector image as a separate ACA job
-    print(f"[4/6] Launching connector image: {docker_image}...")
+    # ── Phase 2: Read via the official connector image ──────────────
+    print(f"[5/7] Launching connector read: {docker_image}...")
     try:
-        execution_name = _launch_connector_aca_job(docker_image, work_dir, config_id)
+        execution_name = _launch_connector_aca_job(
+            docker_image, work_dir, config_id,
+            airbyte_command="read",
+            output_file="output.jsonl",
+        )
     except Exception as exc:
         msg = f"Failed to launch connector job: {type(exc).__name__}: {exc}"
         print(f"ERROR: {msg}")
@@ -586,7 +637,7 @@ def run_docker_native_sync(config_id: str) -> None:
         sys.exit(1)
 
     # 5. Wait for connector job to complete
-    print(f"[5/6] Waiting for connector job {execution_name}...")
+    print(f"[6/7] Waiting for connector job {execution_name}...")
     timeout = int(os.environ.get("DOCKER_JOB_TIMEOUT", "900"))
     success = _wait_for_connector_job(execution_name, timeout=timeout)
 
@@ -601,7 +652,7 @@ def run_docker_native_sync(config_id: str) -> None:
         sys.exit(1)
 
     # 6. Parse JSONL output → Parquet → Blob
-    print("[6/6] Parsing connector output and uploading...")
+    print("[7/7] Parsing connector output and uploading...")
     jsonl_path = work_dir / "output.jsonl"
     if not jsonl_path.exists():
         msg = "Connector job produced no output.jsonl"
