@@ -36,7 +36,7 @@ Environment variables (set by the sync_orchestrator Azure Function):
 
 Onboarding probe (set by FastAPI when ``ONBOARDING_DOCKER_EXECUTION_MODE=azure_job``):
     ONBOARDING_JOB_MODE           — ``onboarding_connector_probe`` to run connector check/discover/read via PyAirbyte
-    ONBOARDING_JOB_PAYLOAD_JSON   — JSON with action, docker_image, config, optional streams / max_streams / read_timeout
+    ONBOARDING_JOB_PAYLOAD_JSON   — JSON with action, docker_image, config, optional streams / max_streams / max_records / read_timeout
 
 Shared (job template secrets):
     SUPABASE_URL              — Supabase project URL
@@ -52,6 +52,7 @@ Docker-native additional:
 
 import json
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -767,6 +768,26 @@ def _pick_streams_for_probe(
     return picked[:max_streams]
 
 
+def _read_with_timeout(source: object, cache: object, timeout_seconds: int) -> None:
+    """Run ``source.read`` with a hard timeout in Linux job containers."""
+
+    def _alarm_handler(_signum, _frame):
+        raise TimeoutError(f"read_probe timed out after {timeout_seconds}s")
+
+    if timeout_seconds <= 0:
+        source.read(cache=cache)
+        return
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    try:
+        signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(timeout_seconds)
+        source.read(cache=cache)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
 def run_onboarding_connector_probe(payload: dict) -> None:
     """Run check/discover/read steps for guided onboarding (PyAirbyte; no Docker CLI).
 
@@ -787,6 +808,7 @@ def run_onboarding_connector_probe(payload: dict) -> None:
         streams_req = None
 
     max_streams = int(payload.get("max_streams") or 3)
+    max_records = int(payload.get("max_records") or 200)
     read_timeout = int(payload.get("read_timeout") or 300)
 
     raw_config = dict(raw_config)
@@ -834,17 +856,22 @@ def run_onboarding_connector_probe(payload: dict) -> None:
                 {"name": n, "supported_sync_modes": ["full_refresh"]} for n in available
             ]
         }
+        # Keep probe scope narrow in container-job mode.
+        effective_max_streams = max(1, min(max_streams, 1))
         picked = _pick_streams_for_probe(
-            catalog, streams_req, max_streams=max_streams
+            catalog, streams_req, max_streams=effective_max_streams
         )
         if not picked:
             print("ERROR: No streams available for test read.")
             sys.exit(1)
         source.select_streams(picked)
-        print(f"[onboarding] read_probe streams={picked!r} (timeout={read_timeout}s)")
+        print(
+            f"[onboarding] read_probe streams={picked!r} "
+            f"(timeout={read_timeout}s, max_records_hint={max_records})"
+        )
         cache = ab.get_default_cache()
-        source.read(cache=cache)
-        print("Onboarding read probe: succeeded.")
+        _read_with_timeout(source, cache, read_timeout)
+        print("Onboarding read probe: succeeded (bounded probe).")
         return
 
     print(f"ERROR: Unknown onboarding action: {action}")

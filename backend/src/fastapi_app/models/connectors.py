@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -53,7 +54,9 @@ class UserConnectorConfig(BaseModel):
     config: dict[str, Any]
     oauth_meta: dict[str, Any] | None = None
     selected_streams: list[str] | None = None
+    sync_mode: Literal["one_off", "recurring"] = "recurring"
     sync_frequency_minutes: int = 360
+    sync_start_at: datetime | None = None
     is_active: bool = True
     sync_validated: bool = False
     last_sync_at: datetime | None = None
@@ -72,7 +75,9 @@ class UserConnectorConfigCreate(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     oauth_meta: dict[str, Any] | None = None
     selected_streams: list[str] | None = None
+    sync_mode: Literal["one_off", "recurring"] = "recurring"
     sync_frequency_minutes: int = Field(default=360, ge=1)
+    sync_start_at: datetime | None = None
     is_active: bool = True
 
 
@@ -84,7 +89,9 @@ class UserConnectorConfigUpdate(BaseModel):
     config: dict[str, Any] | None = None
     oauth_meta: dict[str, Any] | None = None
     selected_streams: list[str] | None = None
+    sync_mode: Literal["one_off", "recurring"] | None = None
     sync_frequency_minutes: int | None = Field(default=None, ge=1)
+    sync_start_at: datetime | None = None
     is_active: bool | None = None
     sync_validated: bool | None = None
 

@@ -48,7 +48,9 @@ ONBOARDING_FRONTEND_REDIRECT: str = _env(
     "ONBOARDING_FRONTEND_REDIRECT", "http://localhost:5173/data/connect"
 )
 # Set to 1 to allow Docker-based check/discover in onboarding tools (local dev only).
-ONBOARDING_DOCKER_ENABLED: bool = _env("ONBOARDING_DOCKER_ENABLED", "0").lower() in (
+ONBOARDING_DOCKER_ENABLED: bool = _env(
+    "ONBOARDING_DOCKER_ENABLED", "0"
+).lower() in (
     "1",
     "true",
     "yes",
@@ -68,7 +70,9 @@ ONBOARDING_ACA_RESOURCE_GROUP: str = _env(
     "ONBOARDING_ACA_RESOURCE_GROUP",
     _env("AZURE_RESOURCE_GROUP"),
 )
-ONBOARDING_ACA_JOB_NAME: str = _env("ONBOARDING_ACA_JOB_NAME", _env("ACA_JOB_NAME"))
+ONBOARDING_ACA_JOB_NAME: str = _env(
+    "ONBOARDING_ACA_JOB_NAME", _env("ACA_JOB_NAME")
+)
 ONBOARDING_ACA_JOB_CONTAINER_NAME: str = _env(
     "ONBOARDING_ACA_JOB_CONTAINER_NAME",
     _env("ACA_JOB_CONTAINER_NAME", "sync-worker"),
@@ -80,9 +84,18 @@ ONBOARDING_ACA_POLL_INTERVAL_SECONDS: int = int(
     _env("ONBOARDING_ACA_POLL_INTERVAL_SECONDS", "5") or "5"
 )
 # `run_sync` Docker read probe: timeout (seconds) and max streams to include in configured catalog.
-ONBOARDING_DOCKER_READ_TIMEOUT: int = int(_env("ONBOARDING_DOCKER_READ_TIMEOUT", "300") or "300")
-ONBOARDING_DOCKER_READ_STREAM_CAP: int = int(_env("ONBOARDING_DOCKER_READ_STREAM_CAP", "3") or "3")
-ONBOARDING_RATE_LIMIT_PER_MIN: int = int(_env("ONBOARDING_RATE_LIMIT_PER_MIN", "40") or "40")
+ONBOARDING_DOCKER_READ_TIMEOUT: int = int(
+    _env("ONBOARDING_DOCKER_READ_TIMEOUT", "300") or "300"
+)
+ONBOARDING_DOCKER_READ_STREAM_CAP: int = int(
+    _env("ONBOARDING_DOCKER_READ_STREAM_CAP", "1") or "1"
+)
+ONBOARDING_DOCKER_READ_RECORD_CAP: int = int(
+    _env("ONBOARDING_DOCKER_READ_RECORD_CAP", "50") or "50"
+)
+ONBOARDING_RATE_LIMIT_PER_MIN: int = int(
+    _env("ONBOARDING_RATE_LIMIT_PER_MIN", "40") or "40"
+)
 
 # Docker-native connector ACA Job (for Java/Python connectors using official images)
 ONBOARDING_ACA_DOCKER_JOB_NAME: str = _env(

@@ -170,22 +170,41 @@ def get_eligible_configs(supabase: Client) -> list[dict]:
 
     eligible = []
     for config in response.data:
+        sync_mode = str(config.get("sync_mode") or "recurring").strip().lower()
         freq_minutes = config.get("sync_frequency_minutes", 360)
         last_sync = config.get("last_sync_at")
+        start_at = config.get("sync_start_at")
 
         # Attach language for routing decisions downstream
         config["_language"] = language_map.get(config.get("docker_repository", ""), "unknown")
 
-        if last_sync is None:
-            # Never synced — always eligible
+        start_dt = None
+        if start_at:
+            try:
+                start_dt = datetime.fromisoformat(str(start_at).replace("Z", "+00:00"))
+            except ValueError:
+                logger.warning("Invalid sync_start_at for config %s: %s", config.get("id"), start_at)
+
+        if sync_mode == "one_off":
+            # One-off runs exactly once after onboarding validation (or after start_at if set).
+            if last_sync is not None:
+                continue
+            if start_dt and now < start_dt:
+                continue
             eligible.append(config)
             continue
 
-        # Parse the timestamp and check if enough time has elapsed
+        if last_sync is None:
+            # Recurring but never synced — honor optional start time if present.
+            if start_dt and now < start_dt:
+                continue
+            eligible.append(config)
+            continue
+
+        # Recurring cadence: check elapsed interval since last successful sync.
         last_sync_dt = datetime.fromisoformat(last_sync.replace("Z", "+00:00"))
         elapsed_minutes = (now - last_sync_dt).total_seconds() / 60
-
-        if elapsed_minutes >= freq_minutes:
+        if elapsed_minutes >= int(freq_minutes or 360):
             eligible.append(config)
 
     logger.info(

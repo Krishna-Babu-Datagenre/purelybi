@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from langchain_core.tools import tool
@@ -30,6 +31,7 @@ from fastapi_app.services.connector_service import (
 from fastapi_app.settings import (
     API_PUBLIC_BASE_URL,
     ONBOARDING_DOCKER_ENABLED,
+    ONBOARDING_DOCKER_READ_RECORD_CAP,
     ONBOARDING_DOCKER_READ_STREAM_CAP,
     ONBOARDING_DOCKER_READ_TIMEOUT,
 )
@@ -54,11 +56,94 @@ def _coerce_str_list(val: Any) -> list[str]:
     return []
 
 
+def _sync_schedule_form_fields() -> list[dict[str, Any]]:
+    return [
+        {
+            "key": "sync_mode",
+            "label": "Sync type",
+            "type": "select",
+            "required": True,
+            "default": "recurring",
+            "options": [
+                {"value": "one_off", "label": "One-off sync"},
+                {"value": "recurring", "label": "Recurring sync"},
+            ],
+            "description": "Choose whether this connector runs once or on a repeating schedule.",
+        },
+        {
+            "key": "interval_value",
+            "label": "Sync interval value",
+            "type": "number",
+            "required": False,
+            "default": 6,
+            "description": "For recurring sync only. Example: 6 with hours = every 6 hours.",
+        },
+        {
+            "key": "interval_unit",
+            "label": "Sync interval unit",
+            "type": "select",
+            "required": False,
+            "default": "hours",
+            "options": [
+                {"value": "minutes", "label": "Minutes"},
+                {"value": "hours", "label": "Hours"},
+                {"value": "days", "label": "Days"},
+            ],
+            "description": "Used only when recurring sync is selected.",
+        },
+        {
+            "key": "start_date",
+            "label": "Start date (optional)",
+            "type": "date",
+            "required": False,
+            "description": "Optional first run date for recurring sync.",
+        },
+    ]
+
+
+def _resolve_sync_schedule(raw: Any) -> tuple[str, int, datetime | None] | None:
+    if not isinstance(raw, dict):
+        return None
+    mode = str(raw.get("mode") or "").strip().lower()
+    if mode == "one_off":
+        return ("one_off", 1, None)
+    if mode != "recurring":
+        return None
+
+    freq = raw.get("frequency_minutes")
+    try:
+        freq_i = int(freq) if freq is not None else 0
+    except (TypeError, ValueError):
+        return None
+    if freq_i < 1:
+        return None
+
+    start_raw = raw.get("start_date")
+    start_at: datetime | None = None
+    if start_raw not in (None, ""):
+        try:
+            d = datetime.fromisoformat(str(start_raw)).date()
+            start_at = datetime(
+                year=d.year,
+                month=d.month,
+                day=d.day,
+                hour=0,
+                minute=0,
+                second=0,
+                tzinfo=timezone.utc,
+            )
+        except ValueError:
+            start_at = None
+
+    return ("recurring", freq_i, start_at)
+
+
 UI_TOOL_NAMES = frozenset(
     {
         "render_auth_options",
         "render_input_fields",
         "render_stream_selector",
+        "render_sync_schedule_form",
         "start_oauth_flow",
     }
 )
@@ -227,6 +312,7 @@ def run_sync(connector_name: str, streams: list[str] | None = None) -> str:
             cfg,
             stream_list if stream_list else None,
             max_streams=ONBOARDING_DOCKER_READ_STREAM_CAP,
+            max_records=ONBOARDING_DOCKER_READ_RECORD_CAP,
             read_timeout=ONBOARDING_DOCKER_READ_TIMEOUT,
         )
         if not ok_probe:
@@ -261,6 +347,9 @@ def run_sync(connector_name: str, streams: list[str] | None = None) -> str:
             config=cfg,
             oauth_meta=existing.get("oauth_meta"),
             selected_streams=stream_list if stream_list else None,
+            sync_mode=str(existing.get("sync_mode") or "recurring"),
+            sync_frequency_minutes=int(existing.get("sync_frequency_minutes") or 360),
+            sync_start_at=existing.get("sync_start_at"),
             sync_validated=bool(ONBOARDING_DOCKER_ENABLED),
         )
     except Exception as e:
@@ -272,8 +361,9 @@ def run_sync(connector_name: str, streams: list[str] | None = None) -> str:
             {
                 "success": True,
                 "message": (
-                    f"Docker test read succeeded ({records} RECORD line(s) parsed). "
-                    "This confirms the connector ran end-to-end locally. "
+                    f"Docker validation sample succeeded ({records} RECORD line(s) sampled). "
+                    "Validation reads are capped by design (not a full extraction). "
+                    "This confirms the connector can fetch data end-to-end locally. "
                     "Scheduled syncs still run in your cloud environment."
                 ),
                 "sync_validated": True,
@@ -324,6 +414,34 @@ def save_config(
     if selected_streams:
         cfg["__selected_streams__"] = selected_streams
 
+    schedule_raw = stores.get_tool_kv("sync_schedule")
+    resolved = _resolve_sync_schedule(schedule_raw)
+    if resolved is None:
+        stores.set_tool_kv(
+            "pending_ui",
+            {
+                "type": "input_fields",
+                "fields": _sync_schedule_form_fields(),
+            },
+        )
+        return json.dumps(
+            {
+                "success": False,
+                "needs_sync_schedule": True,
+                "message": (
+                    "Before saving, collect sync schedule settings using the rendered form "
+                    "(one-off or recurring with interval and optional start date)."
+                ),
+            }
+        )
+
+    sync_mode, sync_frequency_minutes, sync_start_at = resolved
+    cfg["__sync_schedule__"] = {
+        "mode": sync_mode,
+        "frequency_minutes": sync_frequency_minutes if sync_mode == "recurring" else None,
+        "start_at": sync_start_at.isoformat() if sync_start_at else None,
+    }
+
     try:
         upsert_user_connector_onboarding(
             ctx.user_id,
@@ -333,6 +451,9 @@ def save_config(
             config=cfg,
             oauth_meta=oauth_meta,
             selected_streams=selected_streams,
+            sync_mode=sync_mode,
+            sync_frequency_minutes=sync_frequency_minutes,
+            sync_start_at=sync_start_at,
             sync_validated=False,
         )
     except Exception as e:
@@ -452,6 +573,22 @@ def render_stream_selector(streams: list[dict]) -> str:
     )
 
 
+@tool
+def render_sync_schedule_form() -> str:
+    """Render the required sync schedule form (one-off or recurring) and wait for submission."""
+    stores.set_tool_kv(
+        "pending_ui",
+        {
+            "type": "input_fields",
+            "fields": _sync_schedule_form_fields(),
+        },
+    )
+    return (
+        "Displayed sync schedule form (required before save). "
+        "Wait for the user to submit before calling save_config."
+    )
+
+
 @tool(args_schema=StartOAuthFlowArgs)
 def start_oauth_flow(
     docker_repository: str,
@@ -531,5 +668,6 @@ ALL_TOOLS = [
     render_auth_options,
     render_input_fields,
     render_stream_selector,
+    render_sync_schedule_form,
     start_oauth_flow,
 ]

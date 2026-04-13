@@ -12,6 +12,7 @@ import logging
 import time
 import urllib.parse
 from collections import defaultdict
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -121,8 +122,10 @@ def _message_from_form_fields(
     thread_id: str,
 ) -> str:
     agent_values: dict[str, object] = {}
+    raw_values: dict[str, object] = {}
     for row in rows:
         k = row.key
+        raw_values[k] = row.value
         if row.type == "password" and row.value not in (None, ""):
             agent_values[k] = onboarding_stores.store_secret(
                 k,
@@ -132,10 +135,56 @@ def _message_from_form_fields(
             )
         else:
             agent_values[k] = row.value
+
+    sync_schedule = _parse_sync_schedule(raw_values)
+    if sync_schedule:
+        onboarding_stores.set_tool_kv(
+            "sync_schedule",
+            sync_schedule,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+
     return (
         "User submitted configuration values:\n"
         f"```json\n{json.dumps(agent_values, indent=2, default=str)}\n```"
     )
+
+
+def _parse_sync_schedule(values: dict[str, object]) -> dict[str, object] | None:
+    mode = str(values.get("sync_mode") or "").strip().lower()
+    if mode not in {"one_off", "recurring"}:
+        return None
+
+    if mode == "one_off":
+        return {"mode": "one_off", "frequency_minutes": None, "start_date": None}
+
+    unit = str(values.get("interval_unit") or "").strip().lower()
+    if unit not in {"minutes", "hours", "days"}:
+        return None
+
+    raw_n = values.get("interval_value")
+    try:
+        n = int(raw_n) if raw_n is not None else 0
+    except (TypeError, ValueError):
+        return None
+    if n < 1:
+        return None
+
+    mult = {"minutes": 1, "hours": 60, "days": 1440}[unit]
+    freq = n * mult
+
+    raw_start = values.get("start_date")
+    start_date: str | None = None
+    if raw_start not in (None, ""):
+        s = str(raw_start).strip()
+        try:
+            date.fromisoformat(s)
+            start_date = s
+        except ValueError:
+            start_date = None
+
+    return {"mode": "recurring", "frequency_minutes": freq, "start_date": start_date}
 
 
 def _build_init_message(cat: dict) -> str:

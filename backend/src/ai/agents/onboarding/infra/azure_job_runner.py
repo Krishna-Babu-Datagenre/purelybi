@@ -21,7 +21,6 @@ from fastapi_app.settings import (
     ONBOARDING_ACA_RESOURCE_GROUP,
     ONBOARDING_ACA_SUBSCRIPTION_ID,
     ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS,
-    DOCKER_IMAGE_LANGUAGES,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,6 +158,7 @@ def run_onboarding_aca_job(
     config: dict[str, Any],
     streams: list[str] | None = None,
     max_streams: int | None = None,
+    max_records: int | None = None,
     read_timeout: int | None = None,
 ) -> tuple[bool, str]:
     """Start onboarding ACA job execution and wait for terminal status."""
@@ -188,6 +188,7 @@ def run_onboarding_aca_job(
             "config": config,
             "streams": streams or [],
             "max_streams": max_streams,
+            "max_records": max_records,
             "read_timeout": read_timeout,
         }
         env_overrides = {
@@ -461,6 +462,7 @@ def run_onboarding_docker_native_job(
     config: dict[str, Any],
     streams: list[str] | None = None,
     max_streams: int | None = None,
+    max_records: int | None = None,
     read_timeout: int | None = None,
 ) -> tuple[bool, str, list[str]]:
     """Run onboarding check/discover/read using the official Airbyte Docker image.
@@ -543,13 +545,16 @@ def run_onboarding_docker_native_job(
                 return False, "read_probe: no matching streams found in catalog", []
 
             _write_file_share(work_dir, "catalog.json", json.dumps(configured_catalog, default=str))
+            max_output_lines = max(50, int((max_records or 200) * 5))
 
             # ── Phase 2: read with the real catalog ──
             read_script = (
                 f"$AIRBYTE_ENTRYPOINT read "
                 f"--config /data/{work_dir}/config.json "
                 f"--catalog /data/{work_dir}/catalog.json "
-                f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log"
+                f"2>/data/{work_dir}/stderr.log "
+                f"| head -n {max_output_lines} "
+                f"> /data/{work_dir}/output.jsonl"
             )
             ok, msg, _exec = _launch_docker_job_and_wait(
                 client, docker_image, read_script, "read_probe/read",

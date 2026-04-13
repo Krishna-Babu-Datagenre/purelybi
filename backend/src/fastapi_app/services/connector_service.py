@@ -16,6 +16,7 @@ import math
 import os
 import tempfile
 from datetime import date, datetime
+from typing import Literal
 from decimal import Decimal
 from typing import Any
 
@@ -500,7 +501,9 @@ def upsert_user_connector_onboarding(
     config: dict[str, Any],
     oauth_meta: dict[str, Any] | None = None,
     selected_streams: list[str] | None = None,
+    sync_mode: Literal["one_off", "recurring"] = "recurring",
     sync_frequency_minutes: int = 360,
+    sync_start_at: datetime | None = None,
     sync_validated: bool = False,
     is_active: bool = True,
 ) -> dict[str, Any]:
@@ -513,7 +516,9 @@ def upsert_user_connector_onboarding(
             config=config,
             oauth_meta=oauth_meta,
             selected_streams=selected_streams,
+            sync_mode=sync_mode,
             sync_frequency_minutes=sync_frequency_minutes,
+            sync_start_at=sync_start_at,
             sync_validated=sync_validated,
             is_active=is_active,
         )
@@ -526,7 +531,9 @@ def upsert_user_connector_onboarding(
         config=config,
         oauth_meta=oauth_meta,
         selected_streams=selected_streams,
+        sync_mode=sync_mode,
         sync_frequency_minutes=sync_frequency_minutes,
+        sync_start_at=sync_start_at,
         is_active=is_active,
     )
     return create_user_connector(user_id, body)

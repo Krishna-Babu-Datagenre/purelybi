@@ -157,6 +157,7 @@ export default function OnboardingChatPanel({
   const [streamingText, setStreamingText] = useState('');
   const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
   const [uiBlock, setUiBlock] = useState<OnboardingUiBlock | null>(null);
+  const [syncModeChoice, setSyncModeChoice] = useState<string>('');
   /** True while the SSE request is in flight (headers + body). */
   const [streamBusy, setStreamBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -216,6 +217,20 @@ export default function OnboardingChatPanel({
     el.style.height = '0px';
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`; // cap ~8-10 lines
   }, [input]);
+
+  useEffect(() => {
+    if (!uiBlock || uiBlock.type !== 'input_fields') {
+      setSyncModeChoice('');
+      return;
+    }
+    const syncModeField = uiBlock.fields.find((f) => String(f.key) === 'sync_mode');
+    if (!syncModeField) {
+      setSyncModeChoice('');
+      return;
+    }
+    const next = selectDefaultString(syncModeField.default || 'recurring');
+    setSyncModeChoice(next || 'recurring');
+  }, [uiBlock]);
 
   const runStream = useCallback(
     async (req: Parameters<typeof streamOnboardingChat>[0]) => {
@@ -530,12 +545,23 @@ export default function OnboardingChatPanel({
           }}
         >
           <p className="text-sm font-medium text-[var(--text-primary)]">Configuration</p>
-          {uiBlock.fields.map((f) => {
-            const id = `${formId}-${f.key}`;
-            const label = f.required ? `${f.label ?? f.key} *` : (f.label ?? f.key);
-            const ftype = f.type ?? 'text';
-            const common =
-              'w-full rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--border-strong)] focus:ring-1 focus:ring-[var(--brand)]';
+          {(() => {
+            const keys = new Set(uiBlock.fields.map((f) => String(f.key)));
+            const isSyncScheduleForm =
+              keys.has('sync_mode') && keys.has('interval_value') && keys.has('interval_unit');
+            const disableIntervalFields =
+              isSyncScheduleForm && syncModeChoice.trim().toLowerCase() === 'one_off';
+
+            return uiBlock.fields.map((f) => {
+              const id = `${formId}-${f.key}`;
+              const label = f.required ? `${f.label ?? f.key} *` : (f.label ?? f.key);
+              const ftype = f.type ?? 'text';
+              const isIntervalField =
+                String(f.key) === 'interval_value' || String(f.key) === 'interval_unit';
+              const isDisabled = disableIntervalFields && isIntervalField;
+              const common = `w-full rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--border-strong)] focus:ring-1 focus:ring-[var(--brand)] ${
+                isDisabled ? 'opacity-60 cursor-not-allowed' : ''
+              }`;
             if (ftype === 'password') {
               return (
                 <div key={f.key}>
@@ -568,6 +594,10 @@ export default function OnboardingChatPanel({
                     name={`f_${f.key}`}
                     className={common}
                     defaultValue={selectDefaultString(f.default)}
+                    disabled={isDisabled}
+                    onChange={(e) => {
+                      if (String(f.key) === 'sync_mode') setSyncModeChoice(e.currentTarget.value);
+                    }}
                   >
                     {f.options.map((o, i) => (
                       <option key={`${o.value}-${i}`} value={o.value}>
@@ -609,6 +639,7 @@ export default function OnboardingChatPanel({
                     type="number"
                     className={common}
                     defaultValue={f.default != null ? Number(f.default) : undefined}
+                    disabled={isDisabled}
                   />
                   {f.description && (
                     <p className="text-xs text-[var(--text-muted)] mt-1">{f.description}</p>
@@ -638,13 +669,15 @@ export default function OnboardingChatPanel({
                   className={common}
                   placeholder={f.placeholder}
                   defaultValue={f.default != null ? String(f.default) : ''}
+                  disabled={isDisabled}
                 />
                 {f.description && (
                   <p className="text-xs text-[var(--text-muted)] mt-1">{f.description}</p>
                 )}
               </div>
             );
-          })}
+            });
+          })()}
           <button
             type="submit"
             disabled={streamBusy}

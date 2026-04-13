@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 from ai.agents.onboarding.infra.azure_job_runner import (
@@ -331,6 +332,7 @@ def docker_read_probe(
     stream_names: list[str] | None,
     *,
     max_streams: int = 3,
+    max_records: int = 200,
     read_timeout: int = 300,
 ) -> tuple[bool, int, str, str]:
     """
@@ -347,6 +349,7 @@ def docker_read_probe(
                 config=config,
                 streams=stream_names,
                 max_streams=max_streams,
+                max_records=max_records,
                 read_timeout=read_timeout,
             )
         else:
@@ -356,6 +359,7 @@ def docker_read_probe(
                 config=config,
                 streams=stream_names,
                 max_streams=max_streams,
+                max_records=max_records,
                 read_timeout=read_timeout,
             )
         return ok, 0, msg, ""
@@ -384,7 +388,7 @@ def docker_read_probe(
         fs.write("{}")
         state_path = fs.name
 
-    def _run_cmd(with_state: bool) -> subprocess.CompletedProcess[str]:
+    def _build_cmd(with_state: bool) -> list[str]:
         cmd: list[str] = [
             "docker",
             "run",
@@ -410,47 +414,84 @@ def docker_read_probe(
         )
         if with_state:
             cmd.extend(["--state", "/tmp/state.json"])
-        return subprocess.run(
+        return cmd
+
+    def _run_probe(with_state: bool) -> tuple[int, int, bool, bool, str]:
+        cmd = _build_cmd(with_state)
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=read_timeout,
             encoding="utf-8",
             errors="replace",
         )
-
-    try:
-        result = _run_cmd(with_state=True)
-        err = (result.stderr or "")[:2000]
-        if result.returncode != 0 and (
-            "unknown flag" in err.lower() or "unrecognized" in err.lower()
-        ):
-            result = _run_cmd(with_state=False)
-            err = (result.stderr or "")[:2000]
-
+        deadline = time.monotonic() + max(1, read_timeout)
         record_count = 0
         saw_error = False
-        for line in (result.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            t = msg.get("type")
-            if t == "RECORD":
-                record_count += 1
-            if t == "ERROR":
-                saw_error = True
-            if t == "LOG":
-                log = msg.get("log") or {}
-                if str(log.get("level", "")).upper() == "ERROR":
+        sampled_stop = False
+
+        try:
+            while True:
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    return -1, record_count, saw_error, sampled_stop, ""
+
+                line = proc.stdout.readline() if proc.stdout else ""
+                if not line:
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.01)
+                    continue
+
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                t = msg.get("type")
+                if t == "RECORD":
+                    record_count += 1
+                    if max_records > 0 and record_count >= max_records:
+                        sampled_stop = True
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        break
+                elif t == "ERROR":
                     saw_error = True
-        ok_run = result.returncode == 0 and not saw_error
+                elif t == "LOG":
+                    log = msg.get("log") or {}
+                    if str(log.get("level", "")).upper() == "ERROR":
+                        saw_error = True
+
+            returncode = proc.wait(timeout=5)
+            stderr_tail = ((proc.stderr.read() if proc.stderr else "") or "")[:2000]
+            return returncode, record_count, saw_error, sampled_stop, stderr_tail
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    try:
+        returncode, record_count, saw_error, sampled_stop, err = _run_probe(with_state=True)
+        if returncode != 0 and (
+            "unknown flag" in err.lower() or "unrecognized" in err.lower()
+        ):
+            returncode, record_count, saw_error, sampled_stop, err = _run_probe(with_state=False)
+
+        if returncode == -1:
+            return False, record_count, f"Docker read timed out after {read_timeout}s.", err
+
+        ok_run = ((returncode == 0) or sampled_stop) and not saw_error and record_count > 0
+        mode = "sampled" if sampled_stop else "full"
         msg = (
-            f"Docker read finished (exit {result.returncode}, {record_count} RECORD line(s), "
-            f"streams={picked!r})."
+            f"Docker read probe finished ({mode}, exit {returncode}, "
+            f"records={record_count}, streams={picked!r})."
         )
         return ok_run, record_count, msg, err
     except subprocess.TimeoutExpired:

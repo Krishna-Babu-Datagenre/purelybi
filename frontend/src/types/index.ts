@@ -434,7 +434,9 @@ export interface UserConnectorConfig {
   config: Record<string, unknown>;
   oauth_meta?: Record<string, unknown> | null;
   selected_streams?: string[] | null;
+  sync_mode: 'one_off' | 'recurring';
   sync_frequency_minutes: number;
+  sync_start_at?: string | null;
   is_active: boolean;
   sync_validated: boolean;
   last_sync_at?: string | null;
@@ -451,7 +453,9 @@ export interface UserConnectorConfigPatch {
   config?: Record<string, unknown>;
   oauth_meta?: Record<string, unknown> | null;
   selected_streams?: string[] | null;
+  sync_mode?: 'one_off' | 'recurring';
   sync_frequency_minutes?: number;
+  sync_start_at?: string | null;
   is_active?: boolean;
   sync_validated?: boolean;
 }
