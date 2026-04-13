@@ -99,44 +99,34 @@ Answer ad hoc questions against the user’s **DuckDB** view of synced data: dis
 ### Purpose
 
 Production flow for:
-- Connector schema refresh (Airbyte registry -> Supabase)
-- Scheduled user sync orchestration (Supabase configs -> Container Apps Job)
-- Worker execution (PyAirbyte -> Parquet in Blob)
+- Connector schema refresh (Airbyte registry → Supabase)
+- Scheduled user sync orchestration (Supabase configs → Container Apps Jobs)
+- Worker execution: **PyAirbyte** (manifest-only connectors) or **Docker-native** (Java/Python connectors via official Airbyte images)
 
-### End-to-end flow (UI -> scheduled sync)
+Full architecture, env vars, and resource inventory: **[`docs/data_sync_architecture.md`](docs/data_sync_architecture.md)**
 
-- User connects a source in the product UI (onboarding flow) and config is saved to `user_connector_configs` in Supabase.
-- If onboarding validation passes, row is marked `sync_validated=true`.
-- `func-purelybi-sync-orchestrator-dev-ci` runs on its timer schedule (see Function responsibilities).
-- It selects eligible connector configs and starts `caj-purelybi-data-sync-dev-ci` executions.
-- Worker container reads config from Supabase, runs extraction, writes Parquet to blob, and updates sync status.
+### End-to-end flow (UI → scheduled sync)
+
+1. User connects a source via onboarding → config saved to `user_connector_configs` in Supabase.
+2. If onboarding validation passes, row is marked `sync_validated=true`.
+3. Orchestrator timer selects eligible configs, joins `connector_schemas.language` to decide the execution path.
+4. **Manifest-only connectors** → starts sync-worker ACA Job with PyAirbyte (in-process extraction).
+5. **Java / Python connectors** → starts sync-worker ACA Job with `SYNC_PHASE=docker_read`, which launches a *second* ACA Job running the official Airbyte Docker image. Config and output exchange via Azure File Share.
+6. Worker writes Parquet to Blob Storage and updates sync status.
 
 ### Azure resources (dev baseline)
 
-- Resource group: `rg-purelybi-dev-ci`
-- Function App (orchestrator): `func-purelybi-sync-orchestrator-dev-ci`
-  - Plan: Flex Consumption
-  - Runtime: Python 3.12
-- Function App (schema updater): `func-purelybi-schema-updater-dev-ci`
-  - Plan: Flex Consumption
-  - Runtime: Python 3.12
-- ACR: `acrpurelybidevci` (`acrpurelybidevci.azurecr.io`)
-- Storage account (data lake): `sapurelybidatalakedevci`
-- Container Apps environment: `caenv-purelybi-dev-ci`
-- Container Apps Job: `caj-purelybi-data-sync-dev-ci`
-
-### Function responsibilities
-
-- `func-purelybi-schema-updater-dev-ci`
-  - Timer: daily (03:00 UTC)
-  - Fetches Airbyte OSS registry
-  - Upserts source schemas into Supabase `connector_schemas`
-
-- `func-purelybi-sync-orchestrator-dev-ci`
-  - Timer: every 2 hours
-  - Finds eligible `user_connector_configs`
-  - Starts Container Apps Job execution with per-run env (`SYNC_CONFIG_ID`, `SYNC_USER_ID`, `SYNC_CONNECTOR_NAME`)
-  - Uses managed identity to call `Microsoft.App/jobs/start/action`
+| Resource | Name |
+|----------|------|
+| Resource group | `rg-purelybi-dev-ci` |
+| Function App (orchestrator) | `func-purelybi-sync-orchestrator-dev-ci` |
+| Function App (schema updater) | `func-purelybi-schema-updater-dev-ci` |
+| ACR | `acrpurelybidevci.azurecr.io` |
+| Storage account | `sapurelybidatalakedevci` |
+| Container Apps environment | `caenv-purelybi-dev-ci` |
+| Container Apps Job (sync worker) | `caj-purelybi-data-sync-dev-ci` |
+| Container Apps Job (Docker connectors) | `caj-pbi-docker-connector-dev-ci` |
+| Azure File Share (connector I/O) | `connector-data` on `sapurelybidatalakedevci` |
 
 ### Orchestrator start conditions
 
@@ -176,24 +166,12 @@ Monthly behavior:
 
 ## Required app settings (minimum)
 
-- Orchestrator function app:
-  - `SUPABASE_URL`
-  - `SUPABASE_SERVICE_ROLE_KEY`
-  - `AZURE_SUBSCRIPTION_ID`
-  - `AZURE_RESOURCE_GROUP`
-  - `ACA_JOB_NAME`
-  - `ACA_JOB_CONTAINER_NAME`
+See [`docs/data_sync_architecture.md`](docs/data_sync_architecture.md) for the full env var reference per component.
 
-- Schema updater function app:
-  - `SUPABASE_URL`
-  - `SUPABASE_SERVICE_ROLE_KEY`
-
-- Container Apps Job container:
-  - `SUPABASE_URL`
-  - `SUPABASE_SERVICE_ROLE_KEY` (secret ref preferred)
-  - `AZURE_STORAGE_CONNECTION_STRING` (secret ref preferred)
-  - `BLOB_CONTAINER_NAME`
-  - `AIRBYTE_ENABLE_UNSAFE_CODE=true`
+- Orchestrator function app: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `ACA_JOB_NAME`, `ACA_JOB_CONTAINER_NAME`, `ACA_DOCKER_JOB_NAME`
+- Schema updater function app: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- Sync-worker ACA Job: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AZURE_STORAGE_CONNECTION_STRING`, `BLOB_CONTAINER_NAME`, `AIRBYTE_ENABLE_UNSAFE_CODE=true`
+- Sync-worker (Docker-native path, additional): `ACA_DOCKER_JOB_NAME`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`
 
 ### Deployment notes
 
