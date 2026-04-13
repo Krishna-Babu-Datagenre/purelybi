@@ -274,15 +274,16 @@ def run_onboarding_docker_native_job(
     max_streams: int | None = None,
     read_timeout: int | None = None,
 ) -> tuple[bool, str]:
-    """Run onboarding check/discover using the official Airbyte Docker image.
+    """Run onboarding check/discover/read using the official Airbyte Docker image.
 
     Instead of PyAirbyte (which can't install Java connectors and is slow for
     Python connectors), this launches the official connector image on the
     Docker-native ACA Job and reads the Airbyte-protocol output from the
     shared Azure File Share.
 
-    Supported actions: ``check``, ``discover``, ``discover_catalog``.
-    ``read_probe`` falls back to the PyAirbyte path via ``run_onboarding_aca_job``.
+    Supported actions: ``check``, ``discover``, ``discover_catalog``, ``read_probe``.
+    For ``read_probe``, a minimal configured catalog is built from the provided
+    stream names (the onboarding flow always discovers streams before the test sync).
     """
     if not ONBOARDING_ACA_DOCKER_JOB_NAME:
         return (
@@ -290,15 +291,15 @@ def run_onboarding_docker_native_job(
             "ONBOARDING_ACA_DOCKER_JOB_NAME (or ACA_DOCKER_JOB_NAME) is not set.",
         )
 
-    if action not in ("check", "discover", "discover_catalog"):
-        # read_probe is complex (needs configured catalog); delegate to PyAirbyte path.
-        return run_onboarding_aca_job(
-            action=action,
-            docker_image=docker_image,
-            config=config,
-            streams=streams,
-            max_streams=max_streams,
-            read_timeout=read_timeout,
+    valid_actions = ("check", "discover", "discover_catalog", "read_probe")
+    if action not in valid_actions:
+        return False, f"Unsupported Docker-native onboarding action: {action}"
+
+    if action == "read_probe" and not streams:
+        return (
+            False,
+            "Docker-native read_probe requires stream names. "
+            "Run discover first so the user can select streams.",
         )
 
     try:
@@ -306,8 +307,15 @@ def run_onboarding_docker_native_job(
     except Exception:
         return False, "azure-mgmt-appcontainers is required."
 
-    # Map action to Airbyte CLI command
-    cli_command = "check" if action == "check" else "discover"
+    # Map action → Airbyte CLI command.
+    # NOTE: `read` is a shell built-in; use `env read` to force PATH lookup
+    # so /airbyte/bin/read (the connector binary) is executed instead.
+    if action == "read_probe":
+        cli_command = "env read"
+    elif action in ("discover", "discover_catalog"):
+        cli_command = "discover"
+    else:
+        cli_command = "check"
 
     # Unique work dir on the shared File Share
     job_id = uuid.uuid4().hex[:12]
@@ -320,19 +328,50 @@ def run_onboarding_docker_native_job(
         credential = DefaultAzureCredential()
         client = ContainerAppsAPIClient(credential, ONBOARDING_ACA_SUBSCRIPTION_ID)
 
-        # The shell script:
-        #   1. Writes config.json from the env var to the File Share
-        #   2. Runs the connector CLI command
-        #   3. Captures stdout (Airbyte protocol JSONL) to the File Share
         config_json_escaped = json.dumps(json.dumps(clean_config, default=str))
 
-        shell_script = (
-            f"mkdir -p /data/{work_dir} && "
-            f"echo {config_json_escaped} > /data/{work_dir}/config.json && "
-            f"{cli_command} --config /data/{work_dir}/config.json "
-            f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log ; "
-            f"echo $? > /data/{work_dir}/exit_code"
-        )
+        if action == "read_probe":
+            # Build a minimal ConfiguredAirbyteCatalog from the known stream names.
+            # By this point in the onboarding flow the user has already discovered
+            # streams, so we have the names. An empty json_schema is accepted by
+            # most connectors — the schema is only used for output validation.
+            effective_max = max_streams or 3
+            selected_streams = (streams or [])[:effective_max]
+            configured_catalog = {
+                "streams": [
+                    {
+                        "stream": {
+                            "name": s,
+                            "json_schema": {},
+                            "supported_sync_modes": ["full_refresh"],
+                        },
+                        "sync_mode": "full_refresh",
+                        "destination_sync_mode": "overwrite",
+                    }
+                    for s in selected_streams
+                ]
+            }
+            catalog_json_escaped = json.dumps(
+                json.dumps(configured_catalog, default=str)
+            )
+            shell_script = (
+                f"mkdir -p /data/{work_dir} && "
+                f"echo {config_json_escaped} > /data/{work_dir}/config.json && "
+                f"echo {catalog_json_escaped} > /data/{work_dir}/catalog.json && "
+                f"{cli_command} --config /data/{work_dir}/config.json "
+                f"--catalog /data/{work_dir}/catalog.json "
+                f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log ; "
+                f"echo $? > /data/{work_dir}/exit_code"
+            )
+        else:
+            # check / discover — only config.json needed
+            shell_script = (
+                f"mkdir -p /data/{work_dir} && "
+                f"echo {config_json_escaped} > /data/{work_dir}/config.json && "
+                f"{cli_command} --config /data/{work_dir}/config.json "
+                f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log ; "
+                f"echo $? > /data/{work_dir}/exit_code"
+            )
 
         container_override = {
             "name": ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME,
