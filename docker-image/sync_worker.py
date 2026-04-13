@@ -59,6 +59,7 @@ from io import BytesIO
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import airbyte as ab
 import pandas as pd
 from supabase import create_client
@@ -68,6 +69,39 @@ from credential_refresh import (
     TokenRefreshError,
     ensure_fresh_credentials,
 )
+
+# ── DataFrame sanitisation for Parquet ────────────────────────────────
+
+
+def _sanitize_df_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
+    """Make a DataFrame safely writable to Parquet.
+
+    Arrow / Parquet cannot handle:
+      - Mixed-type object columns (e.g. int + str in the same column)
+      - Empty struct columns (dict with no keys)
+      - Nested numpy arrays inside cells
+
+    Strategy: for every ``object``-dtype column, JSON-serialise any cell that
+    is a complex type (dict / list / ndarray / set) and force the whole column
+    to ``str``.  This is lossless — DuckDB can parse JSON strings at query time
+    via ``json_extract`` / ``unnest``.
+    """
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype == object:
+            # Check if any cell is a complex type
+            sample = df[col].dropna().head(50)
+            needs_json = sample.apply(
+                lambda v: isinstance(v, (dict, list, np.ndarray, set, tuple))
+            ).any()
+            if needs_json:
+                df[col] = df[col].apply(
+                    lambda v: json.dumps(v, default=str) if isinstance(v, (dict, list, np.ndarray, set, tuple)) else v
+                )
+            # Force to string to avoid mixed-type Arrow errors
+            df[col] = df[col].astype(str)
+    return df
+
 
 # ── Supabase client ──────────────────────────────────────────────────
 
@@ -158,6 +192,7 @@ def upload_to_blob(
         else:
             merged_df = new_df
 
+        merged_df = _sanitize_df_for_parquet(merged_df)
         out = BytesIO()
         merged_df.to_parquet(out, index=False)
         out.seek(0)
@@ -283,6 +318,7 @@ def run_sync(config_id: str) -> None:
             continue
         if df.empty:
             continue
+        df = _sanitize_df_for_parquet(df)
         parquet_path = output_dir / f"{stream_name}.parquet"
         df.to_parquet(parquet_path, index=False)
         rows_total += len(df)
@@ -673,6 +709,7 @@ def run_docker_native_sync(config_id: str) -> None:
         df = pd.DataFrame(records)
         if df.empty:
             continue
+        df = _sanitize_df_for_parquet(df)
         parquet_path = output_dir / f"{stream_name}.parquet"
         df.to_parquet(parquet_path, index=False)
         rows_total += len(df)
