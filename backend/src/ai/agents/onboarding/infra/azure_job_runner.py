@@ -289,15 +289,19 @@ def _read_file_share_output(work_dir: str) -> str:
 
 def _write_file_share(work_dir: str, filename: str, content: str) -> None:
     """Write a file to the shared Azure File Share (creates directories as needed)."""
+    from azure.core.exceptions import ResourceExistsError
     from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
 
-    # Ensure the directory exists
+    # Ensure the directory exists (ignore if already created)
     dir_client = ShareDirectoryClient.from_connection_string(
         conn_str=AZURE_STORAGE_CONNECTION_STRING,
         share_name=AZURE_FILE_SHARE_NAME,
         directory_path=work_dir,
     )
-    dir_client.create_directory()
+    try:
+        dir_client.create_directory()
+    except ResourceExistsError:
+        pass
 
     file_client = ShareFileClient.from_connection_string(
         conn_str=AZURE_STORAGE_CONNECTION_STRING,
