@@ -287,6 +287,26 @@ def _read_file_share_output(work_dir: str) -> str:
         return ""
 
 
+def _write_file_share(work_dir: str, filename: str, content: str) -> None:
+    """Write a file to the shared Azure File Share (creates directories as needed)."""
+    from azure.storage.fileshare import ShareDirectoryClient, ShareFileClient
+
+    # Ensure the directory exists
+    dir_client = ShareDirectoryClient.from_connection_string(
+        conn_str=AZURE_STORAGE_CONNECTION_STRING,
+        share_name=AZURE_FILE_SHARE_NAME,
+        directory_path=work_dir,
+    )
+    dir_client.create_directory()
+
+    file_client = ShareFileClient.from_connection_string(
+        conn_str=AZURE_STORAGE_CONNECTION_STRING,
+        share_name=AZURE_FILE_SHARE_NAME,
+        file_path=f"{work_dir}/{filename}",
+    )
+    file_client.upload_file(content.encode("utf-8"))
+
+
 def _parse_catalog_streams(jsonl: str) -> tuple[list[str], dict[str, Any] | None]:
     """Parse Airbyte JSONL for CATALOG messages.
 
@@ -381,11 +401,9 @@ def run_onboarding_docker_native_job(
     except Exception:
         return False, "azure-mgmt-appcontainers is required.", []
 
-    # Map action → Airbyte CLI command.
-    # NOTE: `read` is a shell built-in; use `env read` to force PATH lookup
-    # so /airbyte/bin/read (the connector binary) is executed instead.
+    # Map action → Airbyte CLI sub-command
     if action == "read_probe":
-        cli_command = "env read"
+        cli_command = "read"
     elif action in ("discover", "discover_catalog"):
         cli_command = "discover"
     else:
@@ -399,16 +417,11 @@ def run_onboarding_docker_native_job(
     clean_config = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     try:
-        credential = DefaultAzureCredential()
-        client = ContainerAppsAPIClient(credential, ONBOARDING_ACA_SUBSCRIPTION_ID)
-
-        config_json_escaped = json.dumps(json.dumps(clean_config, default=str))
+        # ── 1. Write config (and catalog) to File Share from the backend ──
+        _write_file_share(work_dir, "config.json", json.dumps(clean_config, default=str))
+        logger.info("Wrote config.json to File Share: %s/config.json", work_dir)
 
         if action == "read_probe":
-            # Build a minimal ConfiguredAirbyteCatalog from the known stream names.
-            # By this point in the onboarding flow the user has already discovered
-            # streams, so we have the names. An empty json_schema is accepted by
-            # most connectors — the schema is only used for output validation.
             effective_max = max_streams or 3
             selected_streams = (streams or [])[:effective_max]
             configured_catalog = {
@@ -425,27 +438,31 @@ def run_onboarding_docker_native_job(
                     for s in selected_streams
                 ]
             }
-            catalog_json_escaped = json.dumps(
-                json.dumps(configured_catalog, default=str)
-            )
+            _write_file_share(work_dir, "catalog.json", json.dumps(configured_catalog, default=str))
+
+        # ── 2. Build shell script ──
+        # Airbyte connector images set $AIRBYTE_ENTRYPOINT to the actual
+        # binary/script (e.g. /airbyte/bin/source-mongodb-v2). We use that
+        # so we don't need to know the exact path per connector.
+        #
+        # The File Share is expected to be mounted at /data on the ACA Job.
+        if action == "read_probe":
             shell_script = (
-                f"mkdir -p /data/{work_dir} && "
-                f"echo {config_json_escaped} > /data/{work_dir}/config.json && "
-                f"echo {catalog_json_escaped} > /data/{work_dir}/catalog.json && "
-                f"{cli_command} --config /data/{work_dir}/config.json "
+                f"$AIRBYTE_ENTRYPOINT {cli_command} "
+                f"--config /data/{work_dir}/config.json "
                 f"--catalog /data/{work_dir}/catalog.json "
-                f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log ; "
-                f"echo $? > /data/{work_dir}/exit_code"
+                f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log"
             )
         else:
-            # check / discover — only config.json needed
             shell_script = (
-                f"mkdir -p /data/{work_dir} && "
-                f"echo {config_json_escaped} > /data/{work_dir}/config.json && "
-                f"{cli_command} --config /data/{work_dir}/config.json "
-                f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log ; "
-                f"echo $? > /data/{work_dir}/exit_code"
+                f"$AIRBYTE_ENTRYPOINT {cli_command} "
+                f"--config /data/{work_dir}/config.json "
+                f"> /data/{work_dir}/output.jsonl 2>/data/{work_dir}/stderr.log"
             )
+
+        # ── 3. Launch the ACA Job ──
+        credential = DefaultAzureCredential()
+        client = ContainerAppsAPIClient(credential, ONBOARDING_ACA_SUBSCRIPTION_ID)
 
         container_override = {
             "name": ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME,
