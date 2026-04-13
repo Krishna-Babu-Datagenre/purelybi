@@ -96,3 +96,7 @@ ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME: str = _env(
 
 # Languages whose connectors must run via official Docker images (no PyPI package or slow install).
 DOCKER_IMAGE_LANGUAGES: set[str] = {"java", "python"}
+
+# Azure File Share for reading Docker-native connector output (discover/read results).
+# This is the same share mounted at /data on the Docker connector ACA Job.
+AZURE_FILE_SHARE_NAME: str = _env("AZURE_FILE_SHARE_NAME", "connector-data")

@@ -11,6 +11,8 @@ from typing import Any
 from azure.identity import DefaultAzureCredential
 
 from fastapi_app.settings import (
+    AZURE_FILE_SHARE_NAME,
+    AZURE_STORAGE_CONNECTION_STRING,
     ONBOARDING_ACA_JOB_CONTAINER_NAME,
     ONBOARDING_ACA_JOB_NAME,
     ONBOARDING_ACA_DOCKER_JOB_NAME,
@@ -265,6 +267,73 @@ def _get_docker_job_execution(client: Any, execution_name: str) -> Any:
     raise RuntimeError("No supported ACA job execution getter found")
 
 
+def _read_file_share_output(work_dir: str) -> str:
+    """Read ``output.jsonl`` from the shared Azure File Share."""
+    if not AZURE_STORAGE_CONNECTION_STRING or not AZURE_FILE_SHARE_NAME:
+        logger.warning("Cannot read File Share: missing connection string or share name")
+        return ""
+    try:
+        from azure.storage.fileshare import ShareFileClient
+
+        file_client = ShareFileClient.from_connection_string(
+            conn_str=AZURE_STORAGE_CONNECTION_STRING,
+            share_name=AZURE_FILE_SHARE_NAME,
+            file_path=f"{work_dir}/output.jsonl",
+        )
+        data = file_client.download_file()
+        return data.readall().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.warning("Failed to read File Share output: %s", exc)
+        return ""
+
+
+def _parse_catalog_streams(jsonl: str) -> tuple[list[str], dict[str, Any] | None]:
+    """Parse Airbyte JSONL for CATALOG messages.
+
+    Returns ``(stream_names, raw_catalog_dict)``.
+    """
+    catalog: dict[str, Any] | None = None
+    stream_names: list[str] = []
+    for line in jsonl.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            if msg.get("type") == "CATALOG":
+                catalog = msg.get("catalog", {})
+                for stream_obj in catalog.get("streams", []):
+                    name = stream_obj.get("name") or (
+                        stream_obj.get("stream", {}).get("name")
+                    )
+                    if name:
+                        stream_names.append(str(name))
+                break  # only need the first CATALOG message
+        except json.JSONDecodeError:
+            continue
+    return sorted(stream_names), catalog
+
+
+def _parse_check_result(jsonl: str) -> tuple[bool | None, str]:
+    """Parse Airbyte JSONL for CONNECTION_STATUS message.
+
+    Returns ``(success_or_none, message)``.
+    """
+    for line in jsonl.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            if msg.get("type") == "CONNECTION_STATUS":
+                status = msg.get("connectionStatus", {})
+                ok = status.get("status", "").upper() == "SUCCEEDED"
+                return ok, status.get("message", "")
+        except json.JSONDecodeError:
+            continue
+    return None, ""
+
+
 def run_onboarding_docker_native_job(
     *,
     action: str,
@@ -273,7 +342,7 @@ def run_onboarding_docker_native_job(
     streams: list[str] | None = None,
     max_streams: int | None = None,
     read_timeout: int | None = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, list[str]]:
     """Run onboarding check/discover/read using the official Airbyte Docker image.
 
     Instead of PyAirbyte (which can't install Java connectors and is slow for
@@ -284,28 +353,33 @@ def run_onboarding_docker_native_job(
     Supported actions: ``check``, ``discover``, ``discover_catalog``, ``read_probe``.
     For ``read_probe``, a minimal configured catalog is built from the provided
     stream names (the onboarding flow always discovers streams before the test sync).
+
+    Returns ``(success, message, discovered_streams)``.
+    ``discovered_streams`` is populated only for ``discover`` / ``discover_catalog``.
     """
     if not ONBOARDING_ACA_DOCKER_JOB_NAME:
         return (
             False,
             "ONBOARDING_ACA_DOCKER_JOB_NAME (or ACA_DOCKER_JOB_NAME) is not set.",
+            [],
         )
 
     valid_actions = ("check", "discover", "discover_catalog", "read_probe")
     if action not in valid_actions:
-        return False, f"Unsupported Docker-native onboarding action: {action}"
+        return False, f"Unsupported Docker-native onboarding action: {action}", []
 
     if action == "read_probe" and not streams:
         return (
             False,
             "Docker-native read_probe requires stream names. "
             "Run discover first so the user can select streams.",
+            [],
         )
 
     try:
         from azure.mgmt.appcontainers import ContainerAppsAPIClient
     except Exception:
-        return False, "azure-mgmt-appcontainers is required."
+        return False, "azure-mgmt-appcontainers is required.", []
 
     # Map action → Airbyte CLI command.
     # NOTE: `read` is a shell built-in; use `env read` to force PATH lookup
@@ -399,7 +473,7 @@ def run_onboarding_docker_native_job(
 
         execution_name = _extract_execution_name(result)
         if not execution_name:
-            return False, "Docker-native ACA job start returned no execution name."
+            return False, "Docker-native ACA job start returned no execution name.", []
 
         # Poll until terminal status
         deadline = time.time() + max(10, ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS)
@@ -410,14 +484,26 @@ def run_onboarding_docker_native_job(
             execution = _get_docker_job_execution(client, execution_name)
             status = _extract_execution_status(execution).strip().lower()
             if status in terminal_success:
-                return (
-                    True,
-                    f"Docker-native onboarding {action} succeeded ({execution_name}).",
-                )
+                # Job succeeded — read output from File Share and parse results
+                discovered: list[str] = []
+                if action in ("discover", "discover_catalog"):
+                    jsonl = _read_file_share_output(work_dir)
+                    discovered, _catalog = _parse_catalog_streams(jsonl)
+                    msg = (
+                        f"Docker-native onboarding {action} succeeded "
+                        f"({execution_name}). Discovered {len(discovered)} streams."
+                    )
+                else:
+                    msg = (
+                        f"Docker-native onboarding {action} succeeded "
+                        f"({execution_name})."
+                    )
+                return True, msg, discovered
             if status in terminal_failed:
                 return (
                     False,
                     f"Docker-native onboarding {action} failed with status '{status}' ({execution_name}).",
+                    [],
                 )
             time.sleep(max(1, ONBOARDING_ACA_POLL_INTERVAL_SECONDS))
 
@@ -425,8 +511,9 @@ def run_onboarding_docker_native_job(
             False,
             f"Docker-native onboarding job timed out after {ONBOARDING_ACA_WAIT_TIMEOUT_SECONDS}s "
             f"(execution={execution_name}).",
+            [],
         )
 
     except Exception as exc:
         logger.exception("Docker-native onboarding job failed")
-        return False, f"Docker-native onboarding failed: {type(exc).__name__}: {exc}"
+        return False, f"Docker-native onboarding failed: {type(exc).__name__}: {exc}", []

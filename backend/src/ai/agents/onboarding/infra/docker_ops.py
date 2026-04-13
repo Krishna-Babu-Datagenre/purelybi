@@ -53,11 +53,12 @@ def _should_use_docker_native(docker_image: str) -> bool:
 def docker_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bool, str]:
     if _use_azure_job_mode():
         if _should_use_docker_native(docker_image):
-            return run_onboarding_docker_native_job(
+            ok, msg, _streams = run_onboarding_docker_native_job(
                 action="check",
                 docker_image=docker_image,
                 config=config,
             )
+            return ok, msg
         return run_onboarding_aca_job(
             action="check",
             docker_image=docker_image,
@@ -117,20 +118,19 @@ def docker_discover_streams(
 ) -> tuple[bool, list[str], str]:
     if _use_azure_job_mode():
         if _should_use_docker_native(docker_image):
-            ok, msg = run_onboarding_docker_native_job(
+            ok, msg, discovered = run_onboarding_docker_native_job(
                 action="discover",
                 docker_image=docker_image,
                 config=config,
             )
+            return ok, discovered, msg
         else:
             ok, msg = run_onboarding_aca_job(
                 action="discover",
                 docker_image=docker_image,
                 config=config,
             )
-        # In azure_job mode, stream names are expected to be persisted/reported by the
-        # dedicated onboarding worker. For now we only surface execution-level success.
-        return ok, [], msg
+            return ok, [], msg
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -196,7 +196,7 @@ def docker_discover_catalog(
 ) -> tuple[bool, dict[str, Any] | None, str]:
     if _use_azure_job_mode():
         if _should_use_docker_native(docker_image):
-            ok, msg = run_onboarding_docker_native_job(
+            ok, msg, _streams = run_onboarding_docker_native_job(
                 action="discover_catalog",
                 docker_image=docker_image,
                 config=config,
@@ -341,7 +341,7 @@ def docker_read_probe(
     """
     if _use_azure_job_mode():
         if _should_use_docker_native(docker_image):
-            ok, msg = run_onboarding_docker_native_job(
+            ok, msg, _streams = run_onboarding_docker_native_job(
                 action="read_probe",
                 docker_image=docker_image,
                 config=config,
