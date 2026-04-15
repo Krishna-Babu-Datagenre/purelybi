@@ -92,20 +92,31 @@ def _sync_schedule_form_fields() -> list[dict[str, Any]]:
         },
         {
             "key": "start_date",
-            "label": "Start date (optional)",
+            "label": "Data start date (optional)",
             "type": "date",
             "required": False,
-            "description": "Optional first run date for recurring sync.",
+            "description": (
+                "Earliest date from which to fetch data. For connectors that "
+                "support a start_date parameter (e.g. Facebook Marketing, Shopify), "
+                "the connector will only read records from this date onward. "
+                "Leave blank to use the connector's default."
+            ),
         },
     ]
 
 
-def _resolve_sync_schedule(raw: Any) -> tuple[str, int, datetime | None] | None:
+def _resolve_sync_schedule(raw: Any) -> tuple[str, int] | None:
+    """Parse sync schedule from raw form data.
+
+    Returns ``(sync_mode, frequency_minutes)`` or ``None`` if incomplete.
+    The ``start_date`` field in the form is a *data-range* start date
+    (stored in the connector config JSONB) — not a scheduling gate.
+    """
     if not isinstance(raw, dict):
         return None
     mode = str(raw.get("mode") or "").strip().lower()
     if mode == "one_off":
-        return ("one_off", 1, None)
+        return ("one_off", 1)
     if mode != "recurring":
         return None
 
@@ -117,24 +128,7 @@ def _resolve_sync_schedule(raw: Any) -> tuple[str, int, datetime | None] | None:
     if freq_i < 1:
         return None
 
-    start_raw = raw.get("start_date")
-    start_at: datetime | None = None
-    if start_raw not in (None, ""):
-        try:
-            d = datetime.fromisoformat(str(start_raw)).date()
-            start_at = datetime(
-                year=d.year,
-                month=d.month,
-                day=d.day,
-                hour=0,
-                minute=0,
-                second=0,
-                tzinfo=timezone.utc,
-            )
-        except ValueError:
-            start_at = None
-
-    return ("recurring", freq_i, start_at)
+    return ("recurring", freq_i)
 
 
 UI_TOOL_NAMES = frozenset(
@@ -355,7 +349,6 @@ def run_sync(connector_name: str, streams: list[str] | None = None) -> str:
             selected_streams=stream_list if stream_list else None,
             sync_mode=str(existing.get("sync_mode") or "recurring"),
             sync_frequency_minutes=int(existing.get("sync_frequency_minutes") or 360),
-            sync_start_at=existing.get("sync_start_at"),
             sync_validated=bool(ONBOARDING_DOCKER_ENABLED),
         )
     except Exception as e:
@@ -436,17 +429,25 @@ def save_config(
                 "needs_sync_schedule": True,
                 "message": (
                     "Before saving, collect sync schedule settings using the rendered form "
-                    "(one-off or recurring with interval and optional start date)."
+                    "(one-off or recurring with interval and optional data start date)."
                 ),
             }
         )
 
-    sync_mode, sync_frequency_minutes, sync_start_at = resolved
+    sync_mode, sync_frequency_minutes = resolved
     cfg["__sync_schedule__"] = {
         "mode": sync_mode,
         "frequency_minutes": sync_frequency_minutes if sync_mode == "recurring" else None,
-        "start_at": sync_start_at.isoformat() if sync_start_at else None,
     }
+
+    # If the user provided a data start_date via the schedule form, inject it
+    # into the connector config so the Airbyte connector uses it as the data
+    # range start (only relevant for connectors that accept start_date).
+    form_start_date = (schedule_raw or {}).get("start_date")
+    if form_start_date not in (None, ""):
+        s = str(form_start_date).strip()
+        if s:
+            cfg["start_date"] = s
 
     discovered_catalog = stores.get_tool_kv("discovered_catalog")
 
@@ -462,7 +463,6 @@ def save_config(
             discovered_catalog=discovered_catalog,
             sync_mode=sync_mode,
             sync_frequency_minutes=sync_frequency_minutes,
-            sync_start_at=sync_start_at,
             sync_validated=False,
         )
     except Exception as e:

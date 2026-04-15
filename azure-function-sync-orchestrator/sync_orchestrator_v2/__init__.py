@@ -11,12 +11,15 @@ State transitions per timer tick:
   3. eligible  → write config to File Share → start connector → reading
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 import time
 from datetime import datetime, timezone
 from io import BytesIO
+from typing import Any
 from uuid import uuid4
 
 import azure.functions as func
@@ -263,13 +266,45 @@ def refresh_credentials_if_needed(
         sys.path.pop(0)
 
 
+# ── Airbyte JSONL helpers ─────────────────────────────────────────────
+
+
+def extract_last_airbyte_state(jsonl: str) -> dict[str, Any] | None:
+    """Extract the last Airbyte STATE message from JSONL output.
+
+    Connectors emit STATE messages as checkpoints during a read.  The last one
+    represents the cursor position at the end of the sync.  Persisting it and
+    passing it back via ``--state`` on the next run enables incremental sync.
+    """
+    last_state: dict[str, Any] | None = None
+    for line in jsonl.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            if msg.get("type") == "STATE":
+                last_state = msg
+        except json.JSONDecodeError:
+            continue
+    return last_state
+
+
 # ── Catalog helpers ───────────────────────────────────────────────────
 
 
 def build_configured_catalog(
-    raw_catalog: dict, selected_streams: list[str] | None = None
+    raw_catalog: dict,
+    selected_streams: list[str] | None = None,
+    *,
+    prefer_incremental: bool = False,
 ) -> dict:
-    """Build ConfiguredAirbyteCatalog from raw discover catalog."""
+    """Build ConfiguredAirbyteCatalog from raw discover catalog.
+
+    When *prefer_incremental* is True and a stream supports ``incremental``
+    sync mode, the catalog entry uses ``incremental`` + ``append`` so the
+    connector can resume from the last persisted Airbyte STATE.
+    """
     name_set = set(selected_streams) if selected_streams else None
     streams_out = []
     for stream_obj in raw_catalog.get("streams", []) or []:
@@ -279,16 +314,23 @@ def build_configured_catalog(
         if name_set and name not in name_set:
             continue
         modes = stream_obj.get("supported_sync_modes") or ["full_refresh"]
-        sync_mode = "full_refresh" if "full_refresh" in modes else str(modes[0])
-        cursor_field = []
-        if sync_mode != "full_refresh":
+
+        if prefer_incremental and "incremental" in modes:
+            sync_mode = "incremental"
+            dest_mode = "append"
+        else:
+            sync_mode = "full_refresh" if "full_refresh" in modes else str(modes[0])
+            dest_mode = "overwrite"
+
+        cursor_field: list[str] = []
+        if sync_mode == "incremental":
             dc = stream_obj.get("default_cursor_field")
             if isinstance(dc, list):
                 cursor_field = [str(x) for x in dc]
         streams_out.append({
             "stream": stream_obj,
             "sync_mode": sync_mode,
-            "destination_sync_mode": "overwrite",
+            "destination_sync_mode": dest_mode,
             "cursor_field": cursor_field,
         })
     return {"streams": streams_out}
@@ -309,7 +351,21 @@ def get_configs_by_status(supabase: Client, status: str) -> list[dict]:
 
 
 def get_eligible_configs(supabase: Client) -> list[dict]:
-    """Query configs due for a new sync (same eligibility logic as V1)."""
+    """Query configs due for a new sync.
+
+    Eligibility rules:
+      * ``is_active`` and ``sync_validated`` must be True.
+      * Not currently in-flight (``queued``, ``reading``, ``uploading``,
+        ``reauth_required``).
+      * Circuit breaker: ≥ MAX_CONSECUTIVE_FAILURES consecutive failures → skip.
+      * **one_off**: eligible only when ``last_sync_at IS NULL``.
+      * **recurring**: eligible when ``last_sync_at IS NULL`` OR elapsed
+        minutes since last sync ≥ ``sync_frequency_minutes``.
+
+    Syncing starts immediately once a config row is created (no scheduling
+    gate). The connector-level ``start_date`` (data-range) is inside the
+    config JSONB and passed directly to the Airbyte connector.
+    """
     now = datetime.now(timezone.utc)
     response = (
         supabase.table("user_connector_configs")
@@ -332,26 +388,15 @@ def get_eligible_configs(supabase: Client) -> list[dict]:
         sync_mode = str(config.get("sync_mode") or "recurring").strip().lower()
         freq_minutes = config.get("sync_frequency_minutes", 360)
         last_sync = config.get("last_sync_at")
-        start_at = config.get("sync_start_at")
-
-        start_dt = None
-        if start_at:
-            try:
-                start_dt = datetime.fromisoformat(str(start_at).replace("Z", "+00:00"))
-            except ValueError:
-                pass
 
         if sync_mode == "one_off":
             if last_sync is not None:
                 continue
-            if start_dt and now < start_dt:
-                continue
             eligible.append(config)
             continue
 
+        # Recurring: first run or enough time elapsed
         if last_sync is None:
-            if start_dt and now < start_dt:
-                continue
             eligible.append(config)
             continue
 
@@ -392,17 +437,31 @@ def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) 
             continue
 
         if status == "succeeded":
+            # Capture the last Airbyte STATE message for incremental sync
+            last_state = None
+            if work_id:
+                try:
+                    jsonl = read_from_fileshare(work_id, "output.jsonl")
+                    last_state = extract_last_airbyte_state(jsonl)
+                except Exception as exc:
+                    logger.warning("Failed to extract state for config=%s: %s", config_id, exc)
+
             now = datetime.now(timezone.utc).isoformat()
-            mark_status(supabase, config_id,
-                        last_sync_at=now,
-                        last_sync_status="success",
-                        last_sync_error=None,
-                        aca_execution_name=None,
-                        aca_work_id=None,
-                        consecutive_failures=0)
+            update_fields: dict[str, Any] = {
+                "last_sync_at": now,
+                "last_sync_status": "success",
+                "last_sync_error": None,
+                "aca_execution_name": None,
+                "aca_work_id": None,
+                "consecutive_failures": 0,
+            }
+            if last_state is not None:
+                update_fields["last_airbyte_state"] = last_state
+            mark_status(supabase, config_id, **update_fields)
             cleanup_fileshare(work_id)
             completed += 1
-            logger.info("Upload succeeded: config=%s", config_id)
+            logger.info("Upload succeeded: config=%s state_captured=%s",
+                        config_id, last_state is not None)
         else:
             stderr = read_from_fileshare(work_id, "stderr.log") if work_id else ""
             failures = (config.get("consecutive_failures") or 0) + 1
@@ -517,8 +576,15 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
                 logger.warning("No discovered_catalog for config %s — skipping (run discover first)", config_id)
                 continue
 
-            # Build configured catalog for selected streams
-            configured = build_configured_catalog(catalog, config.get("selected_streams"))
+            # Build configured catalog for selected streams.
+            # When incremental_enabled, prefer incremental sync mode per-stream
+            # so the connector can resume from the last Airbyte STATE.
+            incremental = bool(config.get("incremental_enabled", False))
+            configured = build_configured_catalog(
+                catalog,
+                config.get("selected_streams"),
+                prefer_incremental=incremental,
+            )
             if not configured.get("streams"):
                 mark_status(supabase, config_id,
                             last_sync_status="failed",
@@ -529,12 +595,20 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
             write_to_fileshare(work_id, "config.json", json.dumps(user_config, default=str))
             write_to_fileshare(work_id, "catalog.json", json.dumps(configured, default=str))
 
+            # If we have persisted Airbyte state from a previous sync and
+            # incremental is enabled, write it so the connector can resume.
+            extra_args = f"--catalog /data/{work_id}/catalog.json"
+            last_state = config.get("last_airbyte_state")
+            if last_state and incremental:
+                write_to_fileshare(work_id, "state.json", json.dumps(last_state, default=str))
+                extra_args += f" --state /data/{work_id}/state.json"
+
             # Start the connector on the ACA Job
             execution_name = start_connector_execution(
                 docker_image=config["docker_image"],
                 airbyte_command="read",
                 work_id=work_id,
-                extra_args=f"--catalog /data/{work_id}/catalog.json",
+                extra_args=extra_args,
                 credential=credential,
             )
 

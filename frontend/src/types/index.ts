@@ -436,9 +436,9 @@ export interface UserConnectorConfig {
   selected_streams?: string[] | null;
   sync_mode: 'one_off' | 'recurring';
   sync_frequency_minutes: number;
-  sync_start_at?: string | null;
   is_active: boolean;
   sync_validated: boolean;
+  incremental_enabled: boolean;
   last_sync_at?: string | null;
   last_sync_status: string;
   last_sync_error?: string | null;
@@ -455,9 +455,9 @@ export interface UserConnectorConfigPatch {
   selected_streams?: string[] | null;
   sync_mode?: 'one_off' | 'recurring';
   sync_frequency_minutes?: number;
-  sync_start_at?: string | null;
   is_active?: boolean;
   sync_validated?: boolean;
+  incremental_enabled?: boolean;
 }
 
 /** GET /api/connectors/catalog — slim list (no config_schema / oauth_config) */

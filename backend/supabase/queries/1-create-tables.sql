@@ -282,12 +282,13 @@ CREATE TABLE public.user_connector_configs (
     selected_streams    TEXT[],
     sync_mode           TEXT NOT NULL DEFAULT 'recurring' CHECK (sync_mode IN ('one_off', 'recurring')),
     sync_frequency_minutes INTEGER NOT NULL DEFAULT 360,
-    sync_start_at       TIMESTAMPTZ,
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
     sync_validated      BOOLEAN NOT NULL DEFAULT FALSE,
     last_sync_at        TIMESTAMPTZ,
     last_sync_status    TEXT NOT NULL DEFAULT 'pending',
     last_sync_error     TEXT,
+    last_airbyte_state  JSONB,
+    incremental_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );

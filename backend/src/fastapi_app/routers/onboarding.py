@@ -152,6 +152,12 @@ def _message_from_form_fields(
 
 
 def _parse_sync_schedule(values: dict[str, object]) -> dict[str, object] | None:
+    """Parse sync schedule form values.
+
+    ``start_date`` is a data-range start (stored in connector config JSONB by
+    the save_config tool) — not a scheduling gate. We still forward it in the
+    dict so downstream code can inject it into the connector config.
+    """
     mode = str(values.get("sync_mode") or "").strip().lower()
     if mode not in {"one_off", "recurring"}:
         return None

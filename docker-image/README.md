@@ -20,6 +20,12 @@ docker tag sync-uploader:latest acrpurelybiv2devci.azurecr.io/sync-uploader:late
 docker push acrpurelybiv2devci.azurecr.io/sync-uploader:latest
 ```
 
+```
+cd docker-image
+docker build -f Dockerfile.uploader -t acrpurelybiv2devci.azurecr.io/sync-uploader:latest .
+docker push acrpurelybiv2devci.azurecr.io/sync-uploader:latest
+```
+
 If you are not logged in to ACR yet:
 
 ```powershell

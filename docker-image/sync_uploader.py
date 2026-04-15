@@ -121,7 +121,13 @@ def upload_to_blob(stream_records: dict[str, list[dict]]) -> list[str]:
         if blob_client.exists():
             existing_bytes = blob_client.download_blob().readall()
             existing_df = pd.read_parquet(BytesIO(existing_bytes))
-            df = pd.concat([existing_df, df], ignore_index=True)
+            merged = pd.concat([existing_df, df], ignore_index=True)
+            # Deduplicate by _airbyte_ab_id when available (incremental append)
+            if "_airbyte_ab_id" in merged.columns:
+                merged = merged.drop_duplicates(subset=["_airbyte_ab_id"], keep="last")
+            elif "_ab_id" in merged.columns:
+                merged = merged.drop_duplicates(subset=["_ab_id"], keep="last")
+            df = merged
 
         out = BytesIO()
         df.to_parquet(out, index=False)

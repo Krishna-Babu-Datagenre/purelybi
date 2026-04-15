@@ -1,53 +1,21 @@
-# Simplified Sync Architecture Proposal
+# Simplified Sync Architecture
 
-> **Status: IMPLEMENTED** — This proposal has been built and deployed as Sync V2.
 > See [`data_sync_architecture.md`](data_sync_architecture.md) for the live architecture reference
 > and [`sync_v2_provisioning_guide.md`](sync_v2_provisioning_guide.md) for the Azure provisioning guide.
-> This document is kept as historical context for design decisions.
-
-> **Constraints:**
-> - Docker images for ALL connectors (no PyAirbyte). PyAirbyte is unreliable — missing connector libraries, slow dependency installation, inconsistent behavior.
-> - Serverless compute (no VMs). Onboarding operations (check, discover, probe) must respond quickly — can't tolerate 3-4 min VM cold starts.
-> - Minimize Azure resources. Target: one orchestrator function, one ACA Job, one File Share.
-
-## Problem Statement
-
-The current sync architecture has too many moving parts, making it hard to debug, trace, and operate reliably:
-
-| Concern | Current State |
-|---------|---------------|
-| **Complexity** | 6+ Azure resources (2 Functions, 2 ACA Jobs, File Share, Blob, ACR), 3 execution modes, 2-phase Docker-native pipeline |
-| **Debugging** | Logs scattered across Azure Functions, ACA Job executions, and Supabase; no correlation ID; `print()` instead of structured logging |
-| **Local/cloud parity** | Local uses `docker run` CLI (`docker_ops.py`); cloud uses ACA Jobs + File Share + SDK polling (`azure_job_runner.py`); completely different code paths |
-| **Reliability** | No retry/backoff, no circuit breaker, no deduplication, brittle Azure SDK version handling (3 different code paths for `job_execution`), silent failures |
 
 ---
 
-## Root Cause Analysis
-
-The complexity comes from three compounding decisions:
-
-1. **Two execution runtimes** — PyAirbyte (in-process) for manifest/Python connectors AND Docker images (ACA Job) for Java/Python connectors. Two fundamentally different code paths that share nothing.
-
-2. **Two ACA Jobs** — since ACA can't run Docker-in-Docker, the sync-worker (Job 1) needs to launch the connector image on a second ACA Job (Job 2) and coordinate via File Share. The sync-worker sits idle polling while the connector runs — paying for two containers.
-
-3. **Onboarding duplicates everything** — local dev uses `subprocess.run("docker run ...")`, cloud uses ACA Jobs + File Share + polling. The same operation (check, discover, read) has 4 different implementations depending on `ONBOARDING_DOCKER_EXECUTION_MODE` × language routing.
-
-The result: 3 execution modes in the worker, 2 language-routing paths in the orchestrator, 2 Docker execution paths in onboarding (local CLI vs ACA+FileShare), 650+ lines of Azure SDK glue code, and the sync-worker container existing only to orchestrate another container.
-
----
-
-## Proposed Architecture: Single ACA Job, Direct Connector Execution
+## Architecture: Single ACA Job, Direct Connector Execution
 
 ### Core Idea
 
-**Eliminate the sync-worker container entirely.** Instead of a "worker that launches another container," run the official Airbyte connector image *directly* as the ACA Job execution with image override. The orchestrator and backend become the orchestrators — they write config to the File Share, start the connector, and process the output when it completes.
+**Eliminate the sync-worker container entirely.** Compared to previous version, in this version instead of a "worker that launches another container," run the official Airbyte connector image *directly* as the ACA Job execution with image override. The orchestrator and backend become the orchestrators — they write config to the File Share, start the connector, and process the output when it completes.
 
 This is already how `begin_start()` with image overrides works. The current architecture just wraps it in an unnecessary intermediate container.
 
 ### What changes
 
-| Current | Proposed |
+| Previous | Current |
 |---------|----------|
 | Orchestrator → starts sync-worker → sync-worker starts connector → sync-worker polls → sync-worker uploads | Orchestrator → starts connector directly → orchestrator processes output |
 | 2 ACA Jobs (sync-worker + connector) | 1 ACA Job (connector only) |

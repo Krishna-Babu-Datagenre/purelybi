@@ -56,9 +56,9 @@ class UserConnectorConfig(BaseModel):
     selected_streams: list[str] | None = None
     sync_mode: Literal["one_off", "recurring"] = "recurring"
     sync_frequency_minutes: int = 360
-    sync_start_at: datetime | None = None
     is_active: bool = True
     sync_validated: bool = False
+    incremental_enabled: bool = False
     last_sync_at: datetime | None = None
     last_sync_status: str = "pending"
     last_sync_error: str | None = None
@@ -77,7 +77,6 @@ class UserConnectorConfigCreate(BaseModel):
     selected_streams: list[str] | None = None
     sync_mode: Literal["one_off", "recurring"] = "recurring"
     sync_frequency_minutes: int = Field(default=360, ge=1)
-    sync_start_at: datetime | None = None
     is_active: bool = True
 
 
@@ -91,9 +90,9 @@ class UserConnectorConfigUpdate(BaseModel):
     selected_streams: list[str] | None = None
     sync_mode: Literal["one_off", "recurring"] | None = None
     sync_frequency_minutes: int | None = Field(default=None, ge=1)
-    sync_start_at: datetime | None = None
     is_active: bool | None = None
     sync_validated: bool | None = None
+    incremental_enabled: bool | None = None
 
 
 class SyncedMonthFile(BaseModel):
