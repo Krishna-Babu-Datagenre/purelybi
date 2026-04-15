@@ -1,4 +1,10 @@
-"""Optional Docker-based Airbyte connector check/discover (local dev)."""
+"""Docker / ACA connector operations for onboarding (Sync V2).
+
+Two execution paths:
+  - ``local``: uses ``docker run`` subprocess (dev machine only)
+  - ``azure_job``: starts the official connector image directly on the single
+    ACA Job via ``connector_runner`` — no language routing, no PyAirbyte.
+"""
 
 from __future__ import annotations
 
@@ -8,63 +14,18 @@ import subprocess
 import tempfile
 import time
 from typing import Any
+from uuid import uuid4
 
-from ai.agents.onboarding.infra.azure_job_runner import (
-    run_onboarding_aca_job,
-    run_onboarding_docker_native_job,
-)
-from fastapi_app.settings import DOCKER_IMAGE_LANGUAGES, ONBOARDING_DOCKER_EXECUTION_MODE
+from fastapi_app.settings import ONBOARDING_DOCKER_EXECUTION_MODE
 
 
 def _use_azure_job_mode() -> bool:
     return ONBOARDING_DOCKER_EXECUTION_MODE == "azure_job"
 
 
-def _lookup_connector_language(docker_image: str) -> str:
-    """Look up the connector language from ``connector_schemas`` in Supabase.
-
-    Returns the language string (e.g. ``"java"``, ``"python"``, ``"manifest-only"``)
-    or ``"unknown"`` if not found.
-    """
-    try:
-        from fastapi_app.utils.supabase_client import get_supabase_admin_client
-
-        docker_repo = docker_image.split(":")[0]
-        client = get_supabase_admin_client()
-        rows = (
-            client.table("connector_schemas")
-            .select("language")
-            .eq("docker_repository", docker_repo)
-            .limit(1)
-            .execute()
-        ).data
-        if rows:
-            return rows[0].get("language", "unknown")
-    except Exception:
-        pass
-    return "unknown"
-
-
-def _should_use_docker_native(docker_image: str) -> bool:
-    """Return True if this connector should use the official Docker image."""
-    language = _lookup_connector_language(docker_image)
-    return language in DOCKER_IMAGE_LANGUAGES
-
-
 def docker_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bool, str]:
     if _use_azure_job_mode():
-        if _should_use_docker_native(docker_image):
-            ok, msg, _streams = run_onboarding_docker_native_job(
-                action="check",
-                docker_image=docker_image,
-                config=config,
-            )
-            return ok, msg
-        return run_onboarding_aca_job(
-            action="check",
-            docker_image=docker_image,
-            config=config,
-        )
+        return _aca_check_connection(docker_image, config)
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -114,24 +75,30 @@ def docker_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[
         os.unlink(config_path)
 
 
+def docker_discover_streams_with_catalog(
+    docker_image: str, config: dict[str, Any]
+) -> tuple[bool, list[str], str, dict[str, Any] | None]:
+    """Discover streams and return the full catalog in one call.
+
+    Returns (ok, stream_names, message, catalog_dict_or_None).
+    In ACA mode this is a single execution; locally it parses from docker output.
+    """
+    if _use_azure_job_mode():
+        return _aca_discover_streams_with_catalog(docker_image, config)
+    # Local: run discover once, extract both streams and catalog
+    ok, streams, msg = docker_discover_streams(docker_image, config)
+    if not ok:
+        return False, streams, msg, None
+    # Re-run discover to get the raw catalog (local mode is fast)
+    _, catalog, _ = docker_discover_catalog(docker_image, config)
+    return ok, streams, msg, catalog
+
+
 def docker_discover_streams(
     docker_image: str, config: dict[str, Any]
 ) -> tuple[bool, list[str], str]:
     if _use_azure_job_mode():
-        if _should_use_docker_native(docker_image):
-            ok, msg, discovered = run_onboarding_docker_native_job(
-                action="discover",
-                docker_image=docker_image,
-                config=config,
-            )
-            return ok, discovered, msg
-        else:
-            ok, msg = run_onboarding_aca_job(
-                action="discover",
-                docker_image=docker_image,
-                config=config,
-            )
-            return ok, [], msg
+        return _aca_discover_streams(docker_image, config)
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -196,19 +163,7 @@ def docker_discover_catalog(
     docker_image: str, config: dict[str, Any]
 ) -> tuple[bool, dict[str, Any] | None, str]:
     if _use_azure_job_mode():
-        if _should_use_docker_native(docker_image):
-            ok, msg, _streams = run_onboarding_docker_native_job(
-                action="discover_catalog",
-                docker_image=docker_image,
-                config=config,
-            )
-        else:
-            ok, msg = run_onboarding_aca_job(
-                action="discover_catalog",
-                docker_image=docker_image,
-                config=config,
-            )
-        return ok, None, msg
+        return _aca_discover_catalog(docker_image, config)
     """Run ``discover`` and return the Airbyte ``catalog`` dict from the first CATALOG message."""
     clean = _clean_connector_config(config)
 
@@ -342,27 +297,10 @@ def docker_read_probe(
     Success means the connector process exited 0 and no ERROR line (or LOG level ERROR) was parsed.
     """
     if _use_azure_job_mode():
-        if _should_use_docker_native(docker_image):
-            ok, msg, _streams = run_onboarding_docker_native_job(
-                action="read_probe",
-                docker_image=docker_image,
-                config=config,
-                streams=stream_names,
-                max_streams=max_streams,
-                max_records=max_records,
-                read_timeout=read_timeout,
-            )
-        else:
-            ok, msg = run_onboarding_aca_job(
-                action="read_probe",
-                docker_image=docker_image,
-                config=config,
-                streams=stream_names,
-                max_streams=max_streams,
-                max_records=max_records,
-                read_timeout=read_timeout,
-            )
-        return ok, 0, msg, ""
+        return _aca_read_probe(
+            docker_image, config, stream_names,
+            max_streams=max_streams, max_records=max_records, read_timeout=read_timeout,
+        )
 
     ok, catalog, dmsg = docker_discover_catalog(docker_image, config)
     if not ok or not catalog:
@@ -504,3 +442,191 @@ def docker_read_probe(
                 os.unlink(p)
             except OSError:
                 pass
+
+
+# ── ACA-direct helpers (Sync V2) ─────────────────────────────────────
+# These replace the old azure_job_runner.py — no language routing,
+# no PyAirbyte, all connectors use official Docker images on one ACA Job.
+
+
+def _aca_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bool, str]:
+    """Test connection via the single ACA Job."""
+    from ai.agents.onboarding.infra.connector_runner import (
+        cleanup_fileshare,
+        parse_connection_status,
+        read_from_fileshare,
+        start_connector_execution,
+        wait_for_execution,
+        write_to_fileshare,
+    )
+
+    work_id = f"onb-check-{uuid4().hex[:12]}"
+    clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
+
+    try:
+        write_to_fileshare(work_id, "config.json", json.dumps(clean, default=str))
+
+        execution_name = start_connector_execution(
+            docker_image=docker_image,
+            airbyte_command="check",
+            work_id=work_id,
+        )
+
+        success = wait_for_execution(execution_name, timeout=120)
+
+        if success:
+            jsonl = read_from_fileshare(work_id, "output.jsonl")
+            ok, message = parse_connection_status(jsonl)
+            return ok, message or "Connection check succeeded!"
+
+        stderr = read_from_fileshare(work_id, "stderr.log")
+        return False, f"Check failed: {stderr[:500]}" if stderr else "Check failed (no output)"
+    finally:
+        cleanup_fileshare(work_id)
+
+
+def _aca_discover_streams(
+    docker_image: str, config: dict[str, Any]
+) -> tuple[bool, list[str], str]:
+    """Discover streams via the single ACA Job."""
+    ok, streams, msg, _catalog = _aca_discover_streams_with_catalog(docker_image, config)
+    return ok, streams, msg
+
+
+def _aca_discover_streams_with_catalog(
+    docker_image: str, config: dict[str, Any]
+) -> tuple[bool, list[str], str, dict[str, Any] | None]:
+    """Discover streams + full catalog via the single ACA Job."""
+    from ai.agents.onboarding.infra.connector_runner import (
+        cleanup_fileshare,
+        parse_catalog,
+        read_from_fileshare,
+        start_connector_execution,
+        wait_for_execution,
+        write_to_fileshare,
+    )
+
+    work_id = f"onb-discover-{uuid4().hex[:12]}"
+    clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
+
+    try:
+        write_to_fileshare(work_id, "config.json", json.dumps(clean, default=str))
+
+        execution_name = start_connector_execution(
+            docker_image=docker_image,
+            airbyte_command="discover",
+            work_id=work_id,
+        )
+
+        success = wait_for_execution(execution_name, timeout=180)
+
+        if success:
+            jsonl = read_from_fileshare(work_id, "output.jsonl")
+            streams, catalog = parse_catalog(jsonl)
+            return True, streams, f"Discovered {len(streams)} streams.", catalog
+
+        stderr = read_from_fileshare(work_id, "stderr.log")
+        return False, [], f"Discover failed: {stderr[:500]}" if stderr else "Discover failed", None
+    finally:
+        cleanup_fileshare(work_id)
+
+
+def _aca_discover_catalog(
+    docker_image: str, config: dict[str, Any]
+) -> tuple[bool, dict[str, Any] | None, str]:
+    """Discover full catalog via the single ACA Job."""
+    from ai.agents.onboarding.infra.connector_runner import (
+        cleanup_fileshare,
+        parse_catalog,
+        read_from_fileshare,
+        start_connector_execution,
+        wait_for_execution,
+        write_to_fileshare,
+    )
+
+    work_id = f"onb-catalog-{uuid4().hex[:12]}"
+    clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
+
+    try:
+        write_to_fileshare(work_id, "config.json", json.dumps(clean, default=str))
+
+        execution_name = start_connector_execution(
+            docker_image=docker_image,
+            airbyte_command="discover",
+            work_id=work_id,
+        )
+
+        success = wait_for_execution(execution_name, timeout=180)
+
+        if success:
+            jsonl = read_from_fileshare(work_id, "output.jsonl")
+            streams, catalog = parse_catalog(jsonl)
+            if catalog:
+                return True, catalog, f"Catalog discovered ({len(streams)} streams)."
+            return False, None, "No CATALOG message in discover output."
+
+        stderr = read_from_fileshare(work_id, "stderr.log")
+        return False, None, f"Discover failed: {stderr[:500]}" if stderr else "Discover failed"
+    finally:
+        cleanup_fileshare(work_id)
+
+
+def _aca_read_probe(
+    docker_image: str,
+    config: dict[str, Any],
+    stream_names: list[str] | None,
+    *,
+    max_streams: int = 3,
+    max_records: int = 200,
+    read_timeout: int = 300,
+) -> tuple[bool, int, str, str]:
+    """Bounded read test via the single ACA Job (discover → read)."""
+    from ai.agents.onboarding.infra.connector_runner import (
+        build_configured_catalog,
+        cleanup_fileshare,
+        count_records,
+        parse_catalog,
+        read_from_fileshare,
+        start_connector_execution,
+        wait_for_execution,
+        write_to_fileshare,
+    )
+
+    work_id = f"onb-probe-{uuid4().hex[:12]}"
+    clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
+
+    try:
+        write_to_fileshare(work_id, "config.json", json.dumps(clean, default=str))
+
+        # Phase 1: Discover to get the real catalog
+        exec1 = start_connector_execution(docker_image, "discover", work_id)
+        if not wait_for_execution(exec1, timeout=180):
+            stderr = read_from_fileshare(work_id, "stderr.log")
+            return False, 0, f"Discover phase failed: {stderr[:500]}", ""
+
+        jsonl = read_from_fileshare(work_id, "output.jsonl")
+        discovered_names, catalog = parse_catalog(jsonl)
+        if not catalog:
+            return False, 0, "No catalog found in discover output", ""
+
+        # Phase 2: Read with bounded catalog
+        selected = (stream_names or discovered_names)[:max_streams]
+        configured = build_configured_catalog(catalog, selected)
+        if not configured.get("streams"):
+            return False, 0, "No matching streams found in catalog", ""
+
+        write_to_fileshare(work_id, "catalog.json", json.dumps(configured, default=str))
+
+        exec2 = start_connector_execution(
+            docker_image, "read", work_id,
+            extra_args=f"--catalog /data/{work_id}/catalog.json",
+        )
+        if not wait_for_execution(exec2, timeout=read_timeout):
+            stderr = read_from_fileshare(work_id, "stderr.log")
+            return False, 0, f"Read phase failed: {stderr[:500]}", ""
+
+        jsonl = read_from_fileshare(work_id, "output.jsonl")
+        record_count = count_records(jsonl, max_records)
+        return True, record_count, f"Read probe succeeded ({record_count} records)", ""
+    finally:
+        cleanup_fileshare(work_id)

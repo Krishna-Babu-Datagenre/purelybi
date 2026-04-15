@@ -15,7 +15,6 @@ from ai.agents.onboarding.infra import stores
 from ai.agents.onboarding.infra.context import get_onboarding_context
 from ai.agents.onboarding.infra.docker_ops import (
     docker_check_connection,
-    docker_discover_streams,
     docker_read_probe,
 )
 from ai.agents.onboarding.infra.oauth_backend import (
@@ -253,7 +252,14 @@ def discover_streams(docker_image: str, config: dict) -> str:
                 ),
             }
         )
-    ok, streams, msg = docker_discover_streams(docker_image, config)
+    from ai.agents.onboarding.infra.docker_ops import docker_discover_streams_with_catalog
+
+    ok, streams, msg, catalog = docker_discover_streams_with_catalog(docker_image, config)
+
+    # Cache the full catalog for save_config (Sync V2: avoids rediscovery during scheduled syncs)
+    if ok and catalog:
+        stores.set_tool_kv("discovered_catalog", catalog)
+
     return json.dumps({"success": ok, "streams": streams, "message": msg})
 
 
@@ -442,6 +448,8 @@ def save_config(
         "start_at": sync_start_at.isoformat() if sync_start_at else None,
     }
 
+    discovered_catalog = stores.get_tool_kv("discovered_catalog")
+
     try:
         upsert_user_connector_onboarding(
             ctx.user_id,
@@ -451,6 +459,7 @@ def save_config(
             config=cfg,
             oauth_meta=oauth_meta,
             selected_streams=selected_streams,
+            discovered_catalog=discovered_catalog,
             sync_mode=sync_mode,
             sync_frequency_minutes=sync_frequency_minutes,
             sync_start_at=sync_start_at,

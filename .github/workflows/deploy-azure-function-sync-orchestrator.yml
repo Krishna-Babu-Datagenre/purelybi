@@ -1,3 +1,56 @@
+# Deploys the sync orchestrator V2 timer (eligible user_connector_configs → Container Apps Job executions).
+#
+# Prerequisites in Azure:
+#   - Linux Function App (Python 3.11) with a managed identity that can start the target Container Apps Job
+#   - App settings: SUPABASE_*, ACA_SUBSCRIPTION_ID, ACA_RESOURCE_GROUP, ACA_JOB_NAME,
+#     ACA_JOB_CONTAINER_NAME, AZURE_FILE_SHARE_CONN_STR, AZURE_FILE_SHARE_NAME,
+#     SYNC_UPLOADER_IMAGE, AZURE_STORAGE_CONNECTION_STRING, BLOB_CONTAINER_NAME
+#
+# GitHub:
+#   Secrets:  AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_V2_PUBLISH_PROFILE
+#   Variables: AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_V2_NAME
+
+name: Deploy Azure Function — sync orchestrator
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "azure-function-sync-orchestrator/**"
+      - ".github/workflows/deploy-azure-function-sync-orchestrator.yml"
+  workflow_dispatch:
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: azure-function-sync-orchestrator
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies into .python_packages
+        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ vars.AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_V2_NAME }}
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_V2_PUBLISH_PROFILE }}
+          respect-funcignore: true
+          scm-do-build-during-deployment: false
+          sku: flexconsumption
 # Deploys the sync orchestrator timer (eligible user_connector_configs → Container Apps Job starts).
 #
 # Prerequisites in Azure:

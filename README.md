@@ -15,7 +15,7 @@ Monorepo, main pieces:
 | `backend/` | FastAPI (`src/fastapi_app/`), agents (`src/ai/`), Python deps via **uv** (`pyproject.toml`) |
 | `frontend/` | Vite + React SPA |
 | `azure-function-schema-updater/`, `azure-function-sync-orchestrator/` | Azure Functions (timers) |
-| `docker-image/` | Container Apps Job image for sync workers |
+| `docker-image/` | Sync uploader image (JSONL → Parquet → Blob) for Container Apps Job |
 
 ---
 
@@ -60,7 +60,7 @@ Vite, React 19, TypeScript (strict), Tailwind CSS, Zustand, Apache ECharts (`ech
 
 ### cloud & data plane
 
-**Azure** — Blob storage for Parquet, Azure Functions (schema registry + sync orchestration), Container Apps Jobs for PyAirbyte extraction workers, ACR for worker images. **Supabase** — Postgres + APIs for app metadata and connector state.
+**Azure** — Blob storage for Parquet, Azure Functions (schema registry + sync orchestration), Container Apps Job for running Airbyte connector images directly, ACR for the sync-uploader image. **Supabase** — Postgres + APIs for app metadata and connector state.
 
 ---
 
@@ -72,7 +72,7 @@ Walk a user from “pick a connector” to a saved, test-validated sync configur
 
 ### Data Connectors
 
-Airbyte OSS–style connectors: connection specs and Docker images come from the product catalog; a **schema updater** Function refreshes connector definitions into Supabase (`connector_schemas`). Runtime extraction uses **PyAirbyte** in the worker container; paths and orchestration are documented under [Azure Data Sync](#azure-data-sync---quick-ops-doc) below.
+Airbyte OSS–style connectors: connection specs and Docker images come from the product catalog; a **schema updater** Function refreshes connector definitions into Supabase (`connector_schemas`). Runtime extraction uses official Airbyte Docker images running on a single ACA Job; architecture details are documented in **[`docs/simplified_sync_architecture_proposal.md`](docs/simplified_sync_architecture_proposal.md)** and **[`docs/sync_v2_provisioning_guide.md`](docs/sync_v2_provisioning_guide.md)**.
 
 ### Onboarding Agent
 
@@ -100,63 +100,55 @@ Answer ad hoc questions against the user’s **DuckDB** view of synced data: dis
 
 Production flow for:
 - Connector schema refresh (Airbyte registry → Supabase)
-- Scheduled user sync orchestration (Supabase configs → Container Apps Jobs)
-- Worker execution: **PyAirbyte** (manifest-only connectors) or **Docker-native** (Java/Python connectors via official Airbyte images)
+- Scheduled user sync orchestration (Supabase configs → Container Apps Job executions)
+- All connectors run as official Airbyte Docker images on a single ACA Job with image override — no PyAirbyte, no language routing
 
-Full architecture, env vars, and resource inventory: **[`docs/data_sync_architecture.md`](docs/data_sync_architecture.md)**
+Full architecture: **[`docs/simplified_sync_architecture_proposal.md`](docs/simplified_sync_architecture_proposal.md)**
+Provisioning guide: **[`docs/sync_v2_provisioning_guide.md`](docs/sync_v2_provisioning_guide.md)**
 
 ### End-to-end flow (UI → scheduled sync)
 
 1. User connects a source via onboarding → config saved to `user_connector_configs` in Supabase.
 2. If onboarding validation passes, row is marked `sync_validated=true`.
-3. Orchestrator timer selects eligible configs, joins `connector_schemas.language` to decide the execution path.
-4. **Manifest-only connectors** → starts sync-worker ACA Job with PyAirbyte (in-process extraction).
-5. **Java / Python connectors** → starts sync-worker ACA Job with `SYNC_PHASE=docker_read`, which launches a *second* ACA Job running the official Airbyte Docker image. Config and output exchange via Azure File Share.
-6. Worker writes Parquet to Blob Storage and updates sync status.
+3. Orchestrator timer selects eligible configs.
+4. For each eligible config: writes connector config/catalog to Azure File Share → starts the official Airbyte Docker image on the ACA Job → marks status `reading`.
+5. On next tick: checks completed executions → reads JSONL output → starts the sync-uploader ACA execution (Parquet conversion → Blob upload) → updates sync status.
 
 ### Azure resources (dev baseline)
 
 | Resource | Name |
 |----------|------|
-| Resource group | `rg-purelybi-dev-ci` |
-| Function App (orchestrator) | `func-purelybi-sync-orchestrator-dev-ci` |
+| Resource group | `rg-purelybi-sync-v2-dev-ci` |
+| Function App (orchestrator) | `func-purelybi-sync-orchestrator-v2-dev-ci` |
 | Function App (schema updater) | `func-purelybi-schema-updater-dev-ci` |
-| ACR | `acrpurelybidevci.azurecr.io` |
-| Storage account | `sapurelybidatalakedevci` |
-| Container Apps environment | `caenv-purelybi-dev-ci` |
-| Container Apps Job (sync worker) | `caj-purelybi-data-sync-dev-ci` |
-| Container Apps Job (Docker connectors) | `caj-pbi-docker-connector-dev-ci` |
-| Azure File Share (connector I/O) | `connector-data` on `sapurelybidatalakedevci` |
+| ACR | `acrpurelybiv2devci.azurecr.io` |
+| Storage account | `sapurelybisyncv2devci` |
+| Container Apps environment | `caenv-purelybi-sync-v2-dev-ci` |
+| Container Apps Job | `caj-purelybi-connector-v2-dev-ci` |
+| Azure File Share (connector I/O) | `connector-data-v2` on `sapurelybisyncv2devci` |
 
 ### Orchestrator start conditions
 
 A config is eligible when all are true:
 - `is_active = true`
 - `sync_validated = true`
-- `last_sync_status` is not `queued`
-- `last_sync_status` is not `running`
-- `last_sync_status` is not `reauth_required`
+- `last_sync_status` is not `queued`, `running`, or `reauth_required`
 - `last_sync_at` is null, or elapsed minutes >= `sync_frequency_minutes`
 
 ### Sync status lifecycle
 
 - `queued`: orchestrator accepted/start call succeeded
-- `running`: worker process started and marked row running
-- `success`: worker finished and stored output
-- `failed`: worker/runtime failure or start failure handling
+- `reading`: connector image running on ACA Job, output pending
+- `uploading`: sync-uploader converting JSONL → Parquet → Blob
+- `success`: upload completed
+- `failed`: connector or uploader failure
 - `reauth_required`: token refresh requires user re-auth
 
 ### Data storage layout (blob)
 
-**Path convention:** objects live under `{container}/{prefix}/{user_id}/{connector_name}/{stream_name}/{YYYY-MM}.parquet`, where `container` and `USER_DATA_BLOB_PREFIX` come from env (defaults in `fastapi_app/settings.py` are not identical to every deployment). The example below shows one production-style layout; adjust mentally if your env uses a different container or prefix.
+**Path convention:** `{container}/{prefix}/{user_id}/{connector_name}/{stream_name}/{YYYY-MM}.parquet`
 
-Parquet path format (illustrative):
-
-`raw/user-data/{user_id}/{connector_name}/{stream_name}/{YYYY-MM}.parquet`
-
-Example:
-
-`raw/user-data/c5efc103-bb7f-42dd-ae10-527612b146d4/source-facebook-marketing/ads_insights/2026-04.parquet`
+Example: `raw/user-data/c5efc103-bb7f-42dd-ae10-527612b146d4/source-facebook-marketing/ads_insights/2026-04.parquet`
 
 Monthly behavior:
 - If month file exists: download + append new rows + overwrite same monthly file
@@ -166,12 +158,10 @@ Monthly behavior:
 
 ## Required app settings (minimum)
 
-See [`docs/data_sync_architecture.md`](docs/data_sync_architecture.md) for the full env var reference per component.
+See [`docs/sync_v2_provisioning_guide.md`](docs/sync_v2_provisioning_guide.md) for the full env var reference per component.
 
-- Orchestrator function app: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `ACA_JOB_NAME`, `ACA_JOB_CONTAINER_NAME`, `ACA_DOCKER_JOB_NAME`
+- Orchestrator function app: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ACA_SUBSCRIPTION_ID`, `ACA_RESOURCE_GROUP`, `ACA_JOB_NAME`, `ACA_JOB_CONTAINER_NAME`, `AZURE_FILE_SHARE_CONN_STR`, `AZURE_FILE_SHARE_NAME`, `SYNC_UPLOADER_IMAGE`, `AZURE_STORAGE_CONNECTION_STRING`, `BLOB_CONTAINER_NAME`
 - Schema updater function app: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
-- Sync-worker ACA Job: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AZURE_STORAGE_CONNECTION_STRING`, `BLOB_CONTAINER_NAME`, `AIRBYTE_ENABLE_UNSAFE_CODE=true`
-- Sync-worker (Docker-native path, additional): `ACA_DOCKER_JOB_NAME`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`
 
 ### Deployment notes
 
@@ -180,4 +170,4 @@ See [`docs/data_sync_architecture.md`](docs/data_sync_architecture.md) for the f
 - **Functions:**
   - `.github/workflows/deploy-azure-function-schema-updater.yml`
   - `.github/workflows/deploy-azure-function-sync-orchestrator.yml`
-- **Sync worker image** (build / push / redeploy): `docker-image/README.md`
+- **Sync uploader image** (build / push / redeploy): `docker-image/README.md`

@@ -1,0 +1,22 @@
+# Slim Sync Uploader (Sync V2)
+#
+# Reads Airbyte JSONL from Azure File Share, converts to Parquet,
+# uploads to Azure Blob Storage. Runs as an ACA Job execution.
+#
+# Build:  docker build -t sync-uploader -f Dockerfile.uploader .
+# Push:   docker push <acr>.azurecr.io/sync-uploader:latest
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    pandas \
+    pyarrow \
+    numpy \
+    azure-storage-blob \
+    azure-storage-file-share
+
+COPY sync_uploader.py /app/sync_uploader.py
+
+ENTRYPOINT ["python", "sync_uploader.py"]

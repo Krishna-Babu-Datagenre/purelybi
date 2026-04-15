@@ -97,19 +97,27 @@ ONBOARDING_RATE_LIMIT_PER_MIN: int = int(
     _env("ONBOARDING_RATE_LIMIT_PER_MIN", "40") or "40"
 )
 
-# Docker-native connector ACA Job (for Java/Python connectors using official images)
-ONBOARDING_ACA_DOCKER_JOB_NAME: str = _env(
-    "ONBOARDING_ACA_DOCKER_JOB_NAME",
-    _env("ACA_DOCKER_JOB_NAME"),
+# ── Sync V2: Single ACA Job + File Share ──
+ACA_SUBSCRIPTION_ID_V2: str = _env(
+    "ACA_SUBSCRIPTION_ID",
+    _env("ONBOARDING_ACA_SUBSCRIPTION_ID", _env("AZURE_SUBSCRIPTION_ID")),
 )
-ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME: str = _env(
-    "ONBOARDING_ACA_DOCKER_JOB_CONTAINER_NAME",
-    _env("ACA_DOCKER_JOB_CONTAINER_NAME", "connector"),
+ACA_RESOURCE_GROUP_V2: str = _env(
+    "ACA_RESOURCE_GROUP",
+    _env("ONBOARDING_ACA_RESOURCE_GROUP", _env("AZURE_RESOURCE_GROUP")),
 )
-
-# Languages whose connectors must run via official Docker images (no PyPI package or slow install).
-DOCKER_IMAGE_LANGUAGES: set[str] = {"java", "python"}
-
-# Azure File Share for reading Docker-native connector output (discover/read results).
-# This is the same share mounted at /data on the Docker connector ACA Job.
-AZURE_FILE_SHARE_NAME: str = _env("AZURE_FILE_SHARE_NAME", "connector-data")
+ACA_JOB_NAME_V2: str = _env(
+    "ACA_JOB_NAME",
+    _env("ONBOARDING_ACA_JOB_NAME"),
+)
+ACA_JOB_CONTAINER_NAME_V2: str = _env(
+    "ACA_JOB_CONTAINER_NAME", "connector"
+)
+AZURE_FILE_SHARE_CONN_STR: str = _env(
+    "AZURE_FILE_SHARE_CONN_STR",
+    _env("AZURE_STORAGE_CONNECTION_STRING"),
+)
+AZURE_FILE_SHARE_NAME_V2: str = _env(
+    "AZURE_FILE_SHARE_NAME", "connector-data-v2"
+)
+SYNC_UPLOADER_IMAGE: str = _env("SYNC_UPLOADER_IMAGE")

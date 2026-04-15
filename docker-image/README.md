@@ -1,39 +1,34 @@
-# Docker Image Runbook (Sync Worker)
+# Docker Image Runbook (Sync Uploader)
 
-This folder contains the container image source used by the Azure Container Apps Job:
+This folder contains the sync-uploader container image used by the Azure Container Apps Job during scheduled syncs.
 
-- Job: `caj-purelybi-data-sync-dev-ci`
-- ACR: `acrpurelybidevci.azurecr.io`
-- Repository: `purelybi/data-sync-worker`
+- Job: `caj-purelybi-connector-v2-dev-ci`
+- ACR: `acrpurelybiv2devci.azurecr.io`
+- Repository: `sync-uploader`
 
-Use this runbook whenever you change `sync_worker.py`, `credential_refresh.py`, or `Dockerfile.worker`.
+The uploader reads Airbyte JSONL output from the Azure File Share, converts it to Parquet, and uploads it to Blob Storage. It runs as a second ACA Job execution after the connector image completes its `read` phase.
+
+Use this runbook whenever you change `sync_uploader.py`, `credential_refresh.py`, or `Dockerfile.uploader`.
 
 ## 1) Build and push image
 
 Run from this folder (`docker-image/`):
 
 ```powershell
-docker build -t data-sync-worker:latest -f Dockerfile.worker .
-docker tag data-sync-worker:latest acrpurelybidevci.azurecr.io/purelybi/data-sync-worker:latest
-docker push acrpurelybidevci.azurecr.io/purelybi/data-sync-worker:latest
+docker build -t sync-uploader:latest -f Dockerfile.uploader .
+docker tag sync-uploader:latest acrpurelybiv2devci.azurecr.io/sync-uploader:latest
+docker push acrpurelybiv2devci.azurecr.io/sync-uploader:latest
 ```
 
 If you are not logged in to ACR yet:
 
 ```powershell
-docker login acrpurelybidevci.azurecr.io
+az acr login --name acrpurelybiv2devci
 ```
 
-## 2) Update Container Apps Job to pick the new image
+## 2) The ACA Job pulls the image on next execution
 
-Portal path:
-
-1. Open `caj-purelybi-data-sync-dev-ci`
-2. Go to the container/template edit screen
-3. Keep image as:
-   - `acrpurelybidevci.azurecr.io/purelybi/data-sync-worker`
-   - tag: `latest`
-4. Save/Deploy a new revision/execution template
+No manual image update needed — the job references `sync-uploader:latest` and pulls on each execution. The `SYNC_UPLOADER_IMAGE` env var in the orchestrator Function App controls which image is used.
 
 ## 3) Quick test flow
 
@@ -41,63 +36,63 @@ Portal path:
    - `is_active = true`
    - `sync_validated = true`
    - `last_sync_status` is not `queued`, `running`, or `reauth_required`
-2. Trigger `func-purelybi-sync-orchestrator-dev-ci` manually (or wait for timer).
+2. Trigger `func-purelybi-sync-orchestrator-v2-dev-ci` manually (or wait for timer).
 3. Verify:
-   - Function log shows `Started ACA job ...`
-   - Job execution appears under `caj-purelybi-data-sync-dev-ci` executions
-   - Worker logs no longer show stale startup errors
+   - Function log shows connector execution started
+   - Execution appears under `caj-purelybi-connector-v2-dev-ci` executions
+   - After connector completes, uploader execution starts
+   - Parquet appears in Blob Storage
 
-## 4) Required app settings / env references
+## 4) Required app settings
 
-### In Function App (`func-purelybi-sync-orchestrator-dev-ci`)
+### In Function App (`func-purelybi-sync-orchestrator-v2-dev-ci`)
 
-- `AZURE_SUBSCRIPTION_ID`
-- `AZURE_RESOURCE_GROUP`
-- `ACA_JOB_NAME=caj-purelybi-data-sync-dev-ci`
-- `ACA_JOB_CONTAINER_NAME` (must match the container name in the ACA Job template)
+- `ACA_SUBSCRIPTION_ID`
+- `ACA_RESOURCE_GROUP`
+- `ACA_JOB_NAME=caj-purelybi-connector-v2-dev-ci`
+- `ACA_JOB_CONTAINER_NAME=connector`
+- `AZURE_FILE_SHARE_CONN_STR` (Azure File Share connection string)
+- `AZURE_FILE_SHARE_NAME=connector-data-v2`
+- `SYNC_UPLOADER_IMAGE=acrpurelybiv2devci.azurecr.io/sync-uploader:latest`
+- `AZURE_STORAGE_CONNECTION_STRING` (Blob Storage)
+- `BLOB_CONTAINER_NAME=raw`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 
-### In Container Apps Job (`caj-purelybi-data-sync-dev-ci`)
+### Env vars injected per uploader execution (by the orchestrator)
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY` (secret reference)
-- `AZURE_STORAGE_CONNECTION_STRING` (secret reference)
-- `BLOB_CONTAINER_NAME` (for example: `sync-output`)
-- `AIRBYTE_ENABLE_UNSAFE_CODE=true`
-
-Per-run values (`SYNC_CONFIG_ID`, `SYNC_USER_ID`, `SYNC_CONNECTOR_NAME`) are injected by the orchestrator on job start.
+- `WORK_ID` — File Share directory for this sync run
+- `AZURE_FILE_SHARE_CONN_STR`
+- `AZURE_FILE_SHARE_NAME`
+- `AZURE_STORAGE_CONNECTION_STRING`
+- `BLOB_CONTAINER_NAME`
+- `USER_ID`, `CONNECTOR_NAME`, `USER_DATA_BLOB_PREFIX`
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SYNC_CONFIG_ID`
 
 ## Storage layout
 
-Worker uploads to blob using:
+Uploader writes to blob:
 
-`raw/user-data/{user_id}/{connector_name}/{stream_name}/{YYYY-MM}.parquet`
+`{container}/{prefix}/{user_id}/{connector_name}/{stream_name}/{YYYY-MM}.parquet`
 
 Example:
 
 `raw/user-data/c5efc103-bb7f-42dd-ae10-527612b146d4/source-facebook-marketing/ads_insights/2026-04.parquet`
 
-Current behavior for the same month file:
-
-- If the monthly blob exists, worker downloads it, appends new rows, and writes it back.
-- If it does not exist, worker creates it.
-
-Status semantics used by current orchestration:
-
-- `queued`: job start accepted by ACA API
-- `running`: worker process started and marked itself running
-- `success` / `failed` / `reauth_required`: terminal outcomes from worker/runtime
+Monthly behavior:
+- If monthly blob exists: download + append new rows + overwrite
+- If not: create new file
 
 ## 5) Recommended tagging (optional but safer)
 
 Using only `latest` works, but version tags make rollbacks easier:
 
 ```powershell
-$tag = "2026-04-07-1"
-docker build -t data-sync-worker:$tag -f Dockerfile.worker .
-docker tag data-sync-worker:$tag acrpurelybidevci.azurecr.io/purelybi/data-sync-worker:$tag
-docker push acrpurelybidevci.azurecr.io/purelybi/data-sync-worker:$tag
+$tag = "2026-04-15-1"
+docker build -t sync-uploader:$tag -f Dockerfile.uploader .
+docker tag sync-uploader:$tag acrpurelybiv2devci.azurecr.io/sync-uploader:$tag
+docker push acrpurelybiv2devci.azurecr.io/sync-uploader:$tag
+```
 ```
 
 Then update the job to use that exact tag.

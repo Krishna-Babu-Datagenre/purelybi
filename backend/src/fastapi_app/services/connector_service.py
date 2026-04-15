@@ -501,6 +501,7 @@ def upsert_user_connector_onboarding(
     config: dict[str, Any],
     oauth_meta: dict[str, Any] | None = None,
     selected_streams: list[str] | None = None,
+    discovered_catalog: dict[str, Any] | None = None,
     sync_mode: Literal["one_off", "recurring"] = "recurring",
     sync_frequency_minutes: int = 360,
     sync_start_at: datetime | None = None,
@@ -522,7 +523,14 @@ def upsert_user_connector_onboarding(
             sync_validated=sync_validated,
             is_active=is_active,
         )
-        return update_user_connector(user_id, existing["id"], patch)
+        result = update_user_connector(user_id, existing["id"], patch)
+        # Save discovered catalog separately (not in the Pydantic model)
+        if discovered_catalog:
+            client = get_supabase_admin_client()
+            client.table(_TABLE).update(
+                {"discovered_catalog": discovered_catalog}
+            ).eq("id", existing["id"]).execute()
+        return result
 
     body = UserConnectorConfigCreate(
         connector_name=connector_name,
@@ -536,7 +544,14 @@ def upsert_user_connector_onboarding(
         sync_start_at=sync_start_at,
         is_active=is_active,
     )
-    return create_user_connector(user_id, body)
+    result = create_user_connector(user_id, body)
+    # Save discovered catalog separately (not in the Pydantic model)
+    if discovered_catalog and result.get("id"):
+        client = get_supabase_admin_client()
+        client.table(_TABLE).update(
+            {"discovered_catalog": discovered_catalog}
+        ).eq("id", result["id"]).execute()
+    return result
 
 
 def delete_user_connector(user_id: str, config_id: str) -> bool:

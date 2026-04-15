@@ -1,7 +1,5 @@
-.git*
-.vscode
-__pycache__
-*.pyc
-.venv
-venv
+__pycache__/
+.python_packages/
+.venv/
 local.settings.json
+.funcignore

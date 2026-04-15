@@ -2,3 +2,9 @@ azure-functions
 supabase
 azure-identity
 azure-mgmt-appcontainers
+azure-storage-file-share
+azure-storage-blob
+pandas
+pyarrow
+numpy
+requests

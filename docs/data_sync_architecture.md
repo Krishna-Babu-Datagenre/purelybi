@@ -7,48 +7,51 @@ How user-connected data sources get synced into Azure Blob Storage as Parquet.
 ## High-level flow
 
 ```
-┌──────────────┐     ┌──────────────────┐    ┌─────────────────────────┐
-│  Schema      │     │  Sync            │    │  Container Apps Jobs    │
-│  Updater     │     │  Orchestrator    │    │                         │
-│  (Function)  │     │  (Function)      │    │  ┌───────────────────┐  │
-│              │     │                  │    │  │  sync-worker      │  │
-│  Airbyte OSS │     │  Supabase query  │--->│  │  (PyAirbyte)      │  │
-│  registry    │---> |  → start ACA Job │    │  └───────────────────┘  │
-│  → Supabase  │     │                  │    │                         │
-│  connector_  │     │  Routes by       │    │  ┌───────────────────┐  │
-│  schemas     │     │  language:       │    │  │  sync-worker      │  │
-└──────────────┘     │  manifest → PyAi │    │  │  (docker_read)    │  │
-                     │  java/py → Docker│--->│  │    ▼              │  │
-                     └──────────────────┘    │  │  launches ------->│-----┐
-                                             │  └───────────────────┘  │  │
-                                             │                         │  │
-                                             │  ┌───────────────────┐  │  │
-                                             │  │ Official Airbyte  │◀---┘
-                                             │  │ Docker image      │  │
-                                             │  │ (File Share I/O)  │  │
-                                             │  └───────────────────┘  │
-                                             └─────────────────────────┘
-                                                       │
-                                                       ▼
-                                              Azure Blob Storage
-                                              (monthly Parquet)
+┌──────────────┐     ┌──────────────────────┐    ┌─────────────────────────────┐
+│  Schema      │     │  Sync Orchestrator    │    │  Single ACA Job             │
+│  Updater     │     │  (Function, 5 min)    │    │  (image overridden per      │
+│  (Function)  │     │                       │    │   execution)                │
+│              │     │  State machine:       │    │                             │
+│  Airbyte OSS │     │  1. uploading →       │    │  Execution A:               │
+│  registry    │──→  │     check uploader    │    │  airbyte/source-shopify     │
+│  → Supabase  │     │  2. reading →         │──→ │  $AIRBYTE_ENTRYPOINT read   │
+│  connector_  │     │     check connector   │    │                             │
+│  schemas     │     │     → start uploader  │    │  Execution B:               │
+└──────────────┘     │  3. eligible →        │    │  sync-uploader:latest       │
+                     │     write config to   │    │  JSONL → Parquet → Blob     │
+                     │     File Share →      │    │                             │
+                     │     start connector   │    └──────────────┬──────────────┘
+                     └──────────────────────┘                   │
+                                                        Azure File Share
+                                                        /data/{work_id}/
+                                                          config.json
+                                                          catalog.json
+                                                          output.jsonl
+                                                          stderr.log
+                                                                │
+                                                                ▼
+                                                       Azure Blob Storage
+                                                       (monthly Parquet)
 ```
 
 ---
 
-## Connector language routing
+## Execution model
 
-The `connector_schemas` table has a `language` column populated by the schema updater from the Airbyte OSS registry.
+All connectors — regardless of language (manifest, Python, Java) — run as official Airbyte Docker images on a **single ACA Job**. The job's base image is overridden per execution via `begin_start()` with container overrides.
 
-| Language | Count (approx) | Execution path |
-|----------|---------------:|----------------|
-| `manifest_only` | ~490 | PyAirbyte (in-process, YAML manifest) |
-| `python` | ~63 | Docker-native (official image) |
-| `java` | ~24 | Docker-native (official image) |
+There is no sync-worker middleman, no PyAirbyte, and no language-based routing.
 
-Routing constant: `DOCKER_IMAGE_LANGUAGES = {"java", "python"}` (in orchestrator and backend settings).
+### Two-phase sync
 
-**Why Docker-native?** PyAirbyte can only run manifest-only connectors natively. Python/Java connectors would need `pip install` or a JVM at runtime — instead we run the official pre-built Airbyte Docker image directly.
+1. **Connector phase** — The orchestrator writes config + catalog to the File Share, starts the official Airbyte image with `$AIRBYTE_ENTRYPOINT read`. Output goes to `/data/{work_id}/output.jsonl`.
+2. **Uploader phase** — When the connector succeeds, the orchestrator starts the sync-uploader image on the same ACA Job. The uploader reads JSONL from the File Share, converts to Parquet, and uploads to Blob Storage.
+
+### Onboarding
+
+The FastAPI backend uses the **same ACA Job** for onboarding operations (check, discover, read-probe), sharing `connector_runner.py` helpers. The only difference: onboarding polls inline (user is waiting) via `wait_for_execution()`, while scheduled syncs use the timer-driven state machine.
+
+Local dev uses `docker run` subprocess for onboarding operations when `ONBOARDING_DOCKER_EXECUTION_MODE=local`.
 
 ---
 
@@ -56,7 +59,7 @@ Routing constant: `DOCKER_IMAGE_LANGUAGES = {"java", "python"}` (in orchestrator
 
 ### 1. Schema Updater (`azure-function-schema-updater/`)
 
-Timer-triggered Azure Function (daily, 03:00 UTC). Fetches the Airbyte OSS connector registry and upserts source connector metadata (including `language`) into the Supabase `connector_schemas` table.
+Timer-triggered Azure Function (daily, 03:00 UTC). Fetches the Airbyte OSS connector registry and upserts source connector metadata into the Supabase `connector_schemas` table.
 
 **Code:** `shared/connector_registry_sync.py`
 
@@ -67,98 +70,80 @@ Timer-triggered Azure Function (daily, 03:00 UTC). Fetches the Airbyte OSS conne
 
 ### 2. Sync Orchestrator (`azure-function-sync-orchestrator/`)
 
-Timer-triggered Azure Function (every 2 hours). Queries Supabase for eligible configs, joins `connector_schemas.language`, and starts the appropriate ACA Job execution.
+Timer-triggered Azure Function (every 5 minutes). Runs a three-phase state machine on each tick:
 
-**Code:** `sync_orchestrator/__init__.py`
+| Phase | Checks status | On completion | Transitions to |
+|-------|--------------|---------------|----------------|
+| 1 | `uploading` | Uploader done → mark success, cleanup File Share | `success` or `failed` |
+| 2 | `reading` | Connector done → start uploader | `uploading` or `failed` |
+| 3 | eligible configs | Write config → start connector | `reading` |
+
+**Code:** `sync_orchestrator_v2/__init__.py`
 
 | Env var | Required | Default | Notes |
 |---------|:--------:|---------|-------|
 | `SUPABASE_URL` | ✓ | | |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✓ | | |
-| `AZURE_SUBSCRIPTION_ID` | ✓ | | |
-| `AZURE_RESOURCE_GROUP` | ✓ | | |
-| `ACA_JOB_NAME` | ✓ | | Sync-worker ACA Job |
-| `ACA_JOB_CONTAINER_NAME` | | `sync-worker` | |
-| `ACA_DOCKER_JOB_NAME` | | `""` | Docker connector ACA Job |
-| `ACA_DOCKER_JOB_CONTAINER_NAME` | | `connector` | |
-
-**Routing logic:**
-- If `language ∈ {"java", "python"}` and `ACA_DOCKER_JOB_NAME` is set → starts sync-worker with `SYNC_PHASE=docker_read` + `SYNC_DOCKER_IMAGE`
-- Otherwise → starts sync-worker with default PyAirbyte path
+| `AZURE_SUBSCRIPTION_ID` | ✓ | | ACA management |
+| `AZURE_RESOURCE_GROUP` | ✓ | | ACA management |
+| `ACA_JOB_NAME` | ✓ | | Single ACA Job |
+| `ACA_JOB_CONTAINER_NAME` | | `connector` | Must match ACA Job template |
+| `AZURE_FILE_SHARE_CONN_STR` | ✓ | | File Share connection string |
+| `AZURE_FILE_SHARE_NAME` | ✓ | | File Share name |
+| `SYNC_UPLOADER_IMAGE` | ✓ | | ACR image for uploader |
+| `AZURE_STORAGE_CONNECTION_STRING` | ✓ | | Blob Storage |
+| `BLOB_CONTAINER_NAME` | | `raw` | Blob container |
 
 **Eligibility logic (start sync vs skip):**
 
-The orchestrator first filters to rows where:
+A config is eligible when:
 - `is_active = true`
 - `sync_validated = true`
-- `last_sync_status NOT IN ('queued', 'running', 'reauth_required')`
+- `last_sync_status` not in (`queued`, `reading`, `uploading`, `reauth_required`)
 
 Then per config:
-- `sync_mode = 'one_off'`
-  - eligible only when `last_sync_at IS NULL` (never synced yet)
-  - if `sync_start_at` is set, only eligible when `now >= sync_start_at`
-- `sync_mode = 'recurring'` (or missing/unknown; treated as recurring)
-  - if `last_sync_at IS NULL`: eligible immediately (or waits for `sync_start_at` if set)
-  - else: eligible when elapsed minutes since `last_sync_at` >= `sync_frequency_minutes`
+- `sync_mode = 'one_off'`: eligible only when `last_sync_at IS NULL` (and past `sync_start_at` if set)
+- `sync_mode = 'recurring'`: eligible when `last_sync_at IS NULL` or elapsed minutes ≥ `sync_frequency_minutes`
 
-This keeps one-off connectors from re-running forever, and recurring connectors on cadence.
+**Circuit breaker:** configs with ≥ 5 consecutive failures are skipped.
 
-**IAM:** Managed identity needs `Microsoft.App/jobs/start/action` on the sync-worker ACA Job (and the Docker connector ACA Job if used).
+**IAM:** Managed identity needs `Microsoft.App/jobs/start/action` on the ACA Job.
 
-### 3. Sync Worker (`docker-image/`)
+### 3. Sync Uploader (`docker-image/`)
 
-Container image (`data-sync-worker`) running in the sync-worker ACA Job. Two execution modes:
+Container image (`sync-uploader`) running on the same ACA Job as connectors. Started by the orchestrator after the connector phase completes.
 
-#### PyAirbyte path (default)
+Reads Airbyte JSONL from the File Share → converts to Parquet (pandas/pyarrow) → uploads to Blob Storage.
 
-Runs when `SYNC_PHASE` is absent. Uses the `airbyte` Python package to install and run the connector in-process. Works for manifest-only connectors.
+**Code:** `sync_uploader.py`, `Dockerfile.uploader`
 
-#### Docker-native path (`SYNC_PHASE=docker_read`)
+**Docker image:** `acrpurelybiv2devci.azurecr.io/sync-uploader:latest`
 
-Runs when orchestrator sets `SYNC_PHASE=docker_read`. Two-phase pipeline:
+Env vars are injected per execution by the orchestrator:
 
-1. **Discover** — launches the official Airbyte image on the Docker connector ACA Job with `$AIRBYTE_ENTRYPOINT discover`. Reads the real catalog from the File Share output.
-2. **Read** — builds a `ConfiguredAirbyteCatalog` from the real discover output (with full `json_schema`), then launches the image again with `$AIRBYTE_ENTRYPOINT read`. Parses JSONL output → Parquet → Blob.
+| Env var | Notes |
+|---------|-------|
+| `WORK_ID` | File Share directory for this sync run |
+| `USER_ID` | Blob path prefix |
+| `DOCKER_IMAGE` | Source connector name for Blob path |
+| `AZURE_FILE_SHARE_CONN_STR` | File Share connection |
+| `AZURE_FILE_SHARE_NAME` | File Share name |
+| `AZURE_STORAGE_CONNECTION_STRING` | Blob upload |
+| `BLOB_CONTAINER_NAME` | Blob container |
 
-Config and output are exchanged via an **Azure File Share** mounted on both jobs.
+### 4. Backend / Onboarding (`backend/src/ai/agents/onboarding/`)
 
-| Env var | Path | Required | Default | Notes |
-|---------|------|:--------:|---------|-------|
-| `SUPABASE_URL` | both | ✓ | | |
-| `SUPABASE_SERVICE_ROLE_KEY` | both | ✓ | | |
-| `AZURE_STORAGE_CONNECTION_STRING` | both | ✓ | | Blob upload |
-| `BLOB_CONTAINER_NAME` | both | | `sync-output` | |
-| `AIRBYTE_ENABLE_UNSAFE_CODE` | both | | `true` (in Dockerfile) | |
-| `SYNC_CONFIG_ID` | both | ✓ | | Set by orchestrator |
-| `SYNC_PHASE` | docker | ✓ | | `docker_read` |
-| `SYNC_DOCKER_IMAGE` | docker | ✓ | | e.g. `airbyte/source-mongodb-v2:2.0.7` |
-| `ACA_DOCKER_JOB_NAME` | docker | ✓ | | Docker connector ACA Job |
-| `ACA_DOCKER_CONNECTOR_CONTAINER_NAME` | docker | | `connector` | |
-| `AZURE_SUBSCRIPTION_ID` | docker | ✓ | | ACA management |
-| `AZURE_RESOURCE_GROUP` | docker | ✓ | | ACA management |
-| `DOCKER_OUTPUT_DIR` | docker | | `/output` | File Share mount point inside sync-worker |
-| `DOCKER_JOB_TIMEOUT` | docker | | `900` | Max seconds per connector job |
-| `DOCKER_JOB_POLL_INTERVAL` | docker | | `10` | Poll interval (seconds) |
+The onboarding agent uses the same ACA Job for check/discover/read-probe of connectors. Shared helpers in `connector_runner.py` provide:
 
-**Docker image:** `acrpurelybidevci.azurecr.io/purelybi/data-sync-worker:latest`
-**Dockerfile:** `docker-image/Dockerfile.worker` (Python 3.11, pip: `airbyte supabase azure-storage-blob requests azure-identity azure-mgmt-appcontainers`)
+- `start_connector_execution()` — start any Airbyte image on the ACA Job
+- `start_uploader_execution()` — start the sync-uploader
+- `poll_execution_status()` / `wait_for_execution()` — check/wait for completion
+- `write_to_fileshare()` / `read_from_fileshare()` / `cleanup_fileshare()` — File Share I/O
+- `parse_connection_status()` / `parse_catalog()` — Airbyte JSONL parsing
 
-### 4. Docker Connector ACA Job
-
-A separate ACA Job resource whose image is **overridden at runtime** with the official Airbyte connector image. The sync-worker launches it via the Azure Management SDK (`jobs.begin_start()` with container overrides).
-
-- Runs `$AIRBYTE_ENTRYPOINT` (set inside every official Airbyte image)
-- Config/catalog read from `/data/{config_id}/config.json` and `/data/{config_id}/catalog.json`
-- Output written to `/data/{config_id}/output.jsonl`
-- Azure File Share mounted at `/data`
-
-No application env vars needed — only `AIRBYTE_ENABLE_UNSAFE_CODE=true` is injected per execution.
-
-**IAM:** The sync-worker's managed identity needs Contributor on this job.
-
-### 5. Backend / Onboarding (`backend/src/ai/agents/onboarding/`)
-
-The onboarding agent also uses the Docker-native path for check/discover/read-probe of Java/Python connectors. Same two-phase approach but communicates via Azure File Share SDK instead of shared volume mount.
+Routing in `docker_ops.py`:
+- `ONBOARDING_DOCKER_EXECUTION_MODE=local` → `docker run` subprocess (dev)
+- `ONBOARDING_DOCKER_EXECUTION_MODE=azure_job` → ACA Job via `connector_runner.py` (cloud)
 
 Key settings in `backend/src/fastapi_app/settings.py`:
 
@@ -166,9 +151,13 @@ Key settings in `backend/src/fastapi_app/settings.py`:
 |---------|---------|-------|
 | `ONBOARDING_DOCKER_ENABLED` | `false` | Enable Docker check/discover |
 | `ONBOARDING_DOCKER_EXECUTION_MODE` | `local` | `local` or `azure_job` |
-| `ONBOARDING_ACA_DOCKER_JOB_NAME` | falls back to `ACA_DOCKER_JOB_NAME` | |
-| `AZURE_FILE_SHARE_NAME` | `connector-data` | For reading connector output |
-| `DOCKER_IMAGE_LANGUAGES` | `{"java", "python"}` | Hardcoded set |
+| `ACA_SUBSCRIPTION_ID_V2` | falls back to `ONBOARDING_ACA_SUBSCRIPTION_ID` → `AZURE_SUBSCRIPTION_ID` | |
+| `ACA_RESOURCE_GROUP_V2` | falls back to `ONBOARDING_ACA_RESOURCE_GROUP` → `AZURE_RESOURCE_GROUP` | |
+| `ACA_JOB_NAME_V2` | falls back to `ONBOARDING_ACA_JOB_NAME` | |
+| `ACA_JOB_CONTAINER_NAME_V2` | `connector` | |
+| `AZURE_FILE_SHARE_CONN_STR` | falls back to `AZURE_STORAGE_CONNECTION_STRING` | |
+| `AZURE_FILE_SHARE_NAME_V2` | `connector-data-v2` | |
+| `SYNC_UPLOADER_IMAGE` | — | ACR image for uploader |
 
 ---
 
@@ -176,15 +165,16 @@ Key settings in `backend/src/fastapi_app/settings.py`:
 
 | Resource | Type | Name |
 |----------|------|------|
-| Resource group | — | `rg-purelybi-dev-ci` |
+| Resource group | — | `rg-purelybi-sync-v2-dev-ci` |
 | Schema updater | Function App | `func-purelybi-schema-updater-dev-ci` |
-| Sync orchestrator | Function App | `func-purelybi-sync-orchestrator-dev-ci` |
-| Sync-worker job | Container Apps Job | `caj-purelybi-data-sync-dev-ci` |
-| Docker connector job | Container Apps Job | `caj-pbi-docker-connector-dev-ci` |
-| Container registry | ACR | `acrpurelybidevci.azurecr.io` |
-| Storage account | Blob + File Share | `sapurelybidatalakedevci` |
-| File Share | Azure Files | `connector-data` |
-| CA environment | Container Apps Env | `caenv-purelybi-dev-ci` |
+| Sync orchestrator | Function App | `func-purelybi-sync-orchestrator-v2-dev-ci` |
+| ACA Job | Container Apps Job | `caj-purelybi-connector-v2-dev-ci` |
+| Container registry | ACR | `acrpurelybiv2devci.azurecr.io` |
+| Storage account | Blob + File Share | `sapurelybisyncv2devci` |
+| File Share | Azure Files | `connector-data-v2` |
+| CA environment | Container Apps Env | `caenv-purelybi-sync-v2-dev-ci` |
+
+ACA Job config: `parallelism=5`, `replicaTimeout=1800`, volume mount `/data` → Azure File Share.
 
 ---
 
@@ -202,11 +192,94 @@ Monthly append: if the month file exists, download → append → overwrite. Oth
 
 | Status | Meaning |
 |--------|---------|
-| `queued` | Orchestrator accepted, ACA Job start succeeded |
-| `running` | Worker started processing |
-| `success` | Parquet written to blob |
-| `failed` | Worker or runtime failure |
+| `reading` | Connector image running on ACA Job |
+| `uploading` | Sync-uploader converting JSONL → Parquet → Blob |
+| `success` | Parquet written to Blob |
+| `failed` | Connector, uploader, or runtime failure |
 | `reauth_required` | OAuth token refresh needs user re-auth |
+
+---
+
+## Environment variables by resource
+
+### Function App — Sync Orchestrator (`func-purelybi-sync-orchestrator-v2-dev-ci`)
+
+Set as App Settings in the Azure portal or via `az functionapp config appsettings set`.
+
+| Env var | Required | Default | Notes |
+|---------|:--------:|---------|-------|
+| `SUPABASE_URL` | ✓ | | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✓ | | Server-only key |
+| `AZURE_SUBSCRIPTION_ID` | ✓ | | For ACA management SDK |
+| `AZURE_RESOURCE_GROUP` | ✓ | | Resource group containing the ACA Job |
+| `ACA_JOB_NAME` | ✓ | | e.g. `caj-purelybi-connector-v2-dev-ci` |
+| `ACA_JOB_CONTAINER_NAME` | | `connector` | Must match the ACA Job template |
+| `AZURE_FILE_SHARE_CONN_STR` | ✓ | | File Share connection string |
+| `AZURE_FILE_SHARE_NAME` | ✓ | | e.g. `connector-data-v2` |
+| `SYNC_UPLOADER_IMAGE` | ✓ | | ACR image for uploader, e.g. `acrpurelybiv2devci.azurecr.io/sync-uploader:latest` |
+| `AZURE_STORAGE_CONNECTION_STRING` | ✓ | | Blob Storage (passed to uploader) |
+| `BLOB_CONTAINER_NAME` | | `raw` | Blob container (passed to uploader) |
+
+### Function App — Schema Updater (`func-purelybi-schema-updater-dev-ci`)
+
+| Env var | Required | Notes |
+|---------|:--------:|-------|
+| `SUPABASE_URL` | ✓ | |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✓ | |
+
+### App Service — Backend / FastAPI
+
+Configured via `backend/.env` locally or App Settings in Azure. Full reference: `backend/.env-example`.
+
+| Env var | Required | Default | Notes |
+|---------|:--------:|---------|-------|
+| `AZURE_LLM_ENDPOINT` | ✓ | | Azure AI / Anthropic-compatible URL |
+| `AZURE_LLM_API_KEY` | ✓ | | |
+| `AZURE_LLM_NAME` | ✓ | | Deployment name |
+| `AZURE_LLM_API_VERSION` | | | |
+| `SUPABASE_URL` | ✓ | | |
+| `SUPABASE_KEY` | ✓ | | Anon / public key |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✓ | | Server-only key |
+| `AZURE_STORAGE_CONNECTION_STRING` | | | Blob + fallback for File Share |
+| `BLOB_CONTAINER_NAME` | | `raw` | |
+| `USER_DATA_BLOB_PREFIX` | | `users` | |
+| `API_PUBLIC_BASE_URL` | | `http://127.0.0.1:8000` | OAuth redirect URI base |
+| `ONBOARDING_FRONTEND_REDIRECT` | | `http://localhost:5173/data/connect` | Post-OAuth browser redirect |
+| `ONBOARDING_DOCKER_ENABLED` | | `0` | Set `1` to enable Docker ops |
+| `ONBOARDING_DOCKER_EXECUTION_MODE` | | `local` | `local` or `azure_job` |
+| `ACA_SUBSCRIPTION_ID` | ★ | | Required when `azure_job` mode |
+| `ACA_RESOURCE_GROUP` | ★ | | Required when `azure_job` mode |
+| `ACA_JOB_NAME` | ★ | | Required when `azure_job` mode |
+| `ACA_JOB_CONTAINER_NAME` | | `connector` | |
+| `AZURE_FILE_SHARE_CONN_STR` | ★ | | Required when `azure_job` mode |
+| `AZURE_FILE_SHARE_NAME` | | `connector-data-v2` | |
+| `SYNC_UPLOADER_IMAGE` | | | Only needed if backend triggers syncs |
+| `LOG_LEVEL` | | `INFO` | |
+| `CORS_EXTRA_ORIGINS` | | | Comma-separated origins |
+
+★ = required only when `ONBOARDING_DOCKER_EXECUTION_MODE=azure_job`
+
+### Sync Uploader container (per-execution, injected by orchestrator)
+
+These are **not** set in any App Settings — the orchestrator injects them as container env overrides on each ACA Job execution.
+
+| Env var | Notes |
+|---------|-------|
+| `WORK_ID` | File Share directory for this sync run |
+| `USER_ID` | Supabase user UUID (for Blob path) |
+| `DOCKER_IMAGE` | Source connector image name (for Blob path) |
+| `AZURE_FILE_SHARE_CONN_STR` | File Share connection string |
+| `AZURE_FILE_SHARE_NAME` | File Share name |
+| `AZURE_STORAGE_CONNECTION_STRING` | Blob Storage connection string |
+| `BLOB_CONTAINER_NAME` | Blob container |
+
+### Container Apps Job (`caj-purelybi-connector-v2-dev-ci`)
+
+The ACA Job itself has **no static app settings**. All env vars are injected per execution via container overrides in `begin_start()`. The job only needs:
+
+- Volume mount: `/data` → Azure File Share (`connector-data-v2`)
+- Registry: ACR credentials for pulling `sync-uploader` image
+- Managed identity: `Microsoft.App/jobs/start/action` granted to orchestrator + backend
 
 ---
 
@@ -214,7 +287,9 @@ Monthly append: if the month file exists, download → append → overwrite. Oth
 
 | Component | Method |
 |-----------|--------|
-| Sync worker image | `docker build -f Dockerfile.worker .` → push to ACR → ACA Job pulls on next execution |
+| Sync uploader image | `docker build -f Dockerfile.uploader .` → push to ACR → ACA Job pulls on next execution |
 | Orchestrator | `.github/workflows/deploy-azure-function-sync-orchestrator.yml` |
 | Schema updater | `.github/workflows/deploy-azure-function-schema-updater.yml` |
 | Backend (FastAPI) | `.github/workflows/deploy-azure-app-service.yml` |
+
+Provisioning guide for setting up all Azure resources from scratch: **[`docs/sync_v2_provisioning_guide.md`](sync_v2_provisioning_guide.md)**

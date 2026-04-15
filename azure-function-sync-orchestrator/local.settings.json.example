@@ -3,11 +3,16 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "python",
-    "SUPABASE_URL": "https://your-project.supabase.co",
-    "SUPABASE_SERVICE_ROLE_KEY": "your-service-role-key",
-    "AZURE_SUBSCRIPTION_ID": "your-subscription-id",
-    "AZURE_RESOURCE_GROUP": "your-resource-group",
-    "ACA_JOB_NAME": "caj-your-job-resource-name",
-    "ACA_JOB_CONTAINER_NAME": "sync-worker"
+    "SUPABASE_URL": "",
+    "SUPABASE_SERVICE_ROLE_KEY": "",
+    "AZURE_SUBSCRIPTION_ID": "",
+    "AZURE_RESOURCE_GROUP": "rg-purelybi-sync-v2",
+    "ACA_JOB_NAME": "caj-purelybi-sync-v2",
+    "ACA_JOB_CONTAINER_NAME": "connector",
+    "AZURE_FILE_SHARE_CONN_STR": "",
+    "AZURE_FILE_SHARE_NAME": "connector-data-v2",
+    "AZURE_STORAGE_CONNECTION_STRING": "",
+    "BLOB_CONTAINER_NAME": "raw",
+    "SYNC_UPLOADER_IMAGE": "acrpurelybisyncv2.azurecr.io/sync-uploader:latest"
   }
 }
