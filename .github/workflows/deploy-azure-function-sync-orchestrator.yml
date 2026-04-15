@@ -31,17 +31,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies into .python_packages
-        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
-
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1
         with:
@@ -49,4 +38,4 @@ jobs:
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
           publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_V2_PUBLISH_PROFILE }}
           respect-funcignore: true
-          scm-do-build-during-deployment: false
+          scm-do-build-during-deployment: true
