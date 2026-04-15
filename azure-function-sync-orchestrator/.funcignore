@@ -1,5 +1,4 @@
 __pycache__/
-.python_packages/
 .venv/
 local.settings.json
 .funcignore
