@@ -50,4 +50,3 @@ jobs:
           publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_SYNC_ORCHESTRATOR_V2_PUBLISH_PROFILE }}
           respect-funcignore: true
           scm-do-build-during-deployment: false
-          sku: flexconsumption
