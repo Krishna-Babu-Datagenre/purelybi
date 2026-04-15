@@ -32,22 +32,55 @@ from supabase import Client, create_client
 logger = logging.getLogger(__name__)
 
 # ── Environment variables ─────────────────────────────────────────────
+# Read lazily so that import-time failures surface inside main() where
+# the Functions host can capture and display them in invocation logs.
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+_env_cache: dict[str, str] = {}
 
-AZURE_SUBSCRIPTION_ID = os.environ["AZURE_SUBSCRIPTION_ID"]
-AZURE_RESOURCE_GROUP = os.environ["AZURE_RESOURCE_GROUP"]
-ACA_JOB_NAME = os.environ["ACA_JOB_NAME"]
-ACA_JOB_CONTAINER_NAME = os.environ.get("ACA_JOB_CONTAINER_NAME", "connector")
 
-FILESHARE_CONN_STR = os.environ["AZURE_FILE_SHARE_CONN_STR"]
-FILESHARE_NAME = os.environ["AZURE_FILE_SHARE_NAME"]
+def _env(key: str, default: str | None = None) -> str:
+    """Read an env var with caching.  Raises KeyError with a clear message."""
+    if key not in _env_cache:
+        val = os.environ.get(key, default)  # type: ignore[arg-type]
+        if val is None:
+            raise KeyError(f"Required environment variable '{key}' is not set")
+        _env_cache[key] = val
+    return _env_cache[key]
 
-BLOB_CONN_STR = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
-BLOB_CONTAINER = os.environ.get("BLOB_CONTAINER_NAME", "raw")
 
-SYNC_UPLOADER_IMAGE = os.environ["SYNC_UPLOADER_IMAGE"]
+def _get_env_vars() -> None:
+    """Eagerly resolve all required env vars (called once from main)."""
+    global SUPABASE_URL, SUPABASE_SERVICE_KEY
+    global AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, ACA_JOB_NAME, ACA_JOB_CONTAINER_NAME
+    global FILESHARE_CONN_STR, FILESHARE_NAME
+    global BLOB_CONN_STR, BLOB_CONTAINER
+    global SYNC_UPLOADER_IMAGE
+
+    SUPABASE_URL = _env("SUPABASE_URL")
+    SUPABASE_SERVICE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY")
+    AZURE_SUBSCRIPTION_ID = _env("AZURE_SUBSCRIPTION_ID")
+    AZURE_RESOURCE_GROUP = _env("AZURE_RESOURCE_GROUP")
+    ACA_JOB_NAME = _env("ACA_JOB_NAME")
+    ACA_JOB_CONTAINER_NAME = _env("ACA_JOB_CONTAINER_NAME", "connector")
+    FILESHARE_CONN_STR = _env("AZURE_FILE_SHARE_CONN_STR")
+    FILESHARE_NAME = _env("AZURE_FILE_SHARE_NAME")
+    BLOB_CONN_STR = _env("AZURE_STORAGE_CONNECTION_STRING")
+    BLOB_CONTAINER = _env("BLOB_CONTAINER_NAME", "raw")
+    SYNC_UPLOADER_IMAGE = _env("SYNC_UPLOADER_IMAGE")
+
+
+# Declare at module level so other functions can reference them
+SUPABASE_URL: str = ""
+SUPABASE_SERVICE_KEY: str = ""
+AZURE_SUBSCRIPTION_ID: str = ""
+AZURE_RESOURCE_GROUP: str = ""
+ACA_JOB_NAME: str = ""
+ACA_JOB_CONTAINER_NAME: str = ""
+FILESHARE_CONN_STR: str = ""
+FILESHARE_NAME: str = ""
+BLOB_CONN_STR: str = ""
+BLOB_CONTAINER: str = ""
+SYNC_UPLOADER_IMAGE: str = ""
 
 # Circuit breaker: skip configs that have failed this many times consecutively
 MAX_CONSECUTIVE_FAILURES = 5
@@ -638,6 +671,12 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
 
 def main(timer: func.TimerRequest) -> None:
     """Timer trigger entry point — runs every 5 minutes."""
+    try:
+        _get_env_vars()
+    except KeyError:
+        logger.exception("Environment variable misconfiguration — aborting")
+        raise
+
     if timer.past_due:
         logger.warning("Timer trigger is past due — running catch-up")
 
