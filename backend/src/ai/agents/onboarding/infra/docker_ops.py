@@ -576,7 +576,8 @@ def _aca_discover_catalog(
             streams, catalog = parse_catalog(jsonl)
             if catalog:
                 return True, catalog, f"Catalog discovered ({len(streams)} streams)."
-            return False, None, "No CATALOG message in discover output."
+            stderr = read_from_fileshare(work_id, "stderr.log")
+            return False, None, f"No CATALOG in discover output. stderr: {stderr[:500]}" if stderr else "No CATALOG message in discover output (empty stderr)."
 
         stderr = read_from_fileshare(work_id, "stderr.log")
         return False, None, f"Discover failed: {stderr[:500]}" if stderr else "Discover failed"
@@ -622,7 +623,8 @@ def _aca_read_probe(
         jsonl = read_from_fileshare(work_id, "output.jsonl")
         discovered_names, catalog = parse_catalog(jsonl)
         if not catalog:
-            return False, 0, "No catalog found in discover output", ""
+            stderr = read_from_fileshare(work_id, "stderr.log")
+            return False, 0, f"No catalog in discover output. stderr: {stderr[:500]}" if stderr else "No catalog found in discover output (empty stderr)", ""
 
         # Phase 2: Read with bounded catalog
         selected = (stream_names or discovered_names)[:max_streams]
