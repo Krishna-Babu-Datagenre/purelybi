@@ -10,13 +10,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from fastapi_app.settings import ONBOARDING_DOCKER_EXECUTION_MODE
+
+
+def _slug(name: str, max_len: int = 24) -> str:
+    """Normalise a connector/image name into a short, filesystem-safe slug."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:max_len]
 
 
 def _use_azure_job_mode() -> bool:
@@ -460,7 +467,9 @@ def _aca_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bo
         write_to_fileshare,
     )
 
-    work_id = f"onb-check-{uuid4().hex[:12]}"
+    connector = _slug(docker_image.rsplit("/", 1)[-1].split(":")[0])
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    work_id = f"onb-check-{connector}-{ts}"
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     try:
@@ -506,7 +515,9 @@ def _aca_discover_streams_with_catalog(
         write_to_fileshare,
     )
 
-    work_id = f"onb-discover-{uuid4().hex[:12]}"
+    connector = _slug(docker_image.rsplit("/", 1)[-1].split(":")[0])
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    work_id = f"onb-discover-{connector}-{ts}"
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     try:
@@ -544,7 +555,9 @@ def _aca_discover_catalog(
         write_to_fileshare,
     )
 
-    work_id = f"onb-catalog-{uuid4().hex[:12]}"
+    connector = _slug(docker_image.rsplit("/", 1)[-1].split(":")[0])
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    work_id = f"onb-catalog-{connector}-{ts}"
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     try:
@@ -592,7 +605,9 @@ def _aca_read_probe(
         write_to_fileshare,
     )
 
-    work_id = f"onb-probe-{uuid4().hex[:12]}"
+    connector = _slug(docker_image.rsplit("/", 1)[-1].split(":")[0])
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    work_id = f"onb-probe-{connector}-{ts}"
     clean = {k: v for k, v in config.items() if not str(k).startswith("__")}
 
     try:

@@ -4,16 +4,24 @@ Reads Airbyte JSONL from the mounted File Share, converts RECORD messages
 to Parquet (one file per stream), and uploads to Azure Blob Storage with
 monthly merge.
 
+On completion the uploader writes the sync outcome (success/failed,
+last_airbyte_state, last_sync_at, etc.) directly to Supabase so the UI
+reflects the result immediately — no need to wait for the next
+orchestrator tick.
+
 This replaces the 900-line sync_worker for the Parquet conversion step.
 
 Environment variables (set by the orchestrator via ACA Job image override):
     WORK_ID                         — File Share directory with output.jsonl
     USER_ID                         — Supabase user UUID
     DOCKER_IMAGE                    — e.g. airbyte/source-shopify:3.2.3 (for blob path)
+    CONFIG_ID                       — user_connector_configs.id (for status callback)
     AZURE_FILE_SHARE_CONN_STR       — File Share connection string
     AZURE_FILE_SHARE_NAME           — File Share name
     AZURE_STORAGE_CONNECTION_STRING  — Blob Storage connection string
     BLOB_CONTAINER_NAME             — Blob container (default: raw)
+    SUPABASE_URL                    — Supabase project URL (for status callback)
+    SUPABASE_SERVICE_ROLE_KEY       — Supabase service-role key (for status callback)
 """
 
 import json
@@ -32,10 +40,13 @@ from azure.storage.fileshare import ShareFileClient
 WORK_ID = os.environ["WORK_ID"]
 USER_ID = os.environ["USER_ID"]
 DOCKER_IMAGE = os.environ["DOCKER_IMAGE"]
+CONFIG_ID = os.environ.get("CONFIG_ID", "")
 FILESHARE_CONN = os.environ["AZURE_FILE_SHARE_CONN_STR"]
 FILESHARE_NAME = os.environ["AZURE_FILE_SHARE_NAME"]
 BLOB_CONN = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
 BLOB_CONTAINER = os.environ.get("BLOB_CONTAINER_NAME", "raw")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -99,6 +110,73 @@ def parse_airbyte_jsonl(content: str) -> dict[str, list[dict]]:
     return streams
 
 
+def cleanup_fileshare() -> None:
+    """Remove the work directory from the File Share after a successful upload."""
+    from azure.storage.fileshare import ShareDirectoryClient
+    try:
+        dir_client = ShareDirectoryClient.from_connection_string(
+            conn_str=FILESHARE_CONN,
+            share_name=FILESHARE_NAME,
+            directory_path=WORK_ID,
+        )
+        for item in dir_client.list_directories_and_files():
+            dir_client.delete_file(item["name"])
+        dir_client.delete_directory()
+        print(f"  Cleaned up file share: {WORK_ID}")
+    except Exception as exc:
+        print(f"  WARNING: File share cleanup failed (non-fatal): {exc}")
+
+
+def extract_last_airbyte_state(content: str) -> dict | None:
+    """Return the last STATE message from Airbyte JSONL output."""
+    last_state: dict | None = None
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            if msg.get("type") == "STATE":
+                last_state = msg
+        except json.JSONDecodeError:
+            continue
+    return last_state
+
+
+def _update_supabase(fields: dict) -> bool:
+    """Best-effort status callback to Supabase.
+
+    Uses urllib so we don't add ``supabase-py``/``httpx`` to the slim image.
+    Returns True on success. Failures are logged but never fatal — the
+    orchestrator will reconcile.
+    """
+    if not (SUPABASE_URL and SUPABASE_KEY and CONFIG_ID):
+        return False
+    import urllib.request
+    import urllib.error
+
+    url = f"{SUPABASE_URL}/rest/v1/user_connector_configs?id=eq.{CONFIG_ID}"
+    data = json.dumps(fields, default=str).encode()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="PATCH",
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        print(f"  Supabase status updated: {fields.get('last_sync_status', '?')}")
+        return True
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"  WARNING: Supabase callback failed (orchestrator will reconcile): {exc}")
+        return False
+
+
 def upload_to_blob(stream_records: dict[str, list[dict]]) -> list[str]:
     """Convert records to Parquet and upload to Blob Storage with monthly merge."""
     blob_service = BlobServiceClient.from_connection_string(BLOB_CONN)
@@ -155,6 +233,16 @@ def main() -> None:
     stream_records = parse_airbyte_jsonl(content)
     if not stream_records:
         print("WARNING: No RECORD messages in output — nothing to upload")
+        ok = _update_supabase({
+            "last_sync_at": datetime.now(timezone.utc).isoformat(),
+            "last_sync_status": "success",
+            "last_sync_error": None,
+            "aca_execution_name": None,
+            "aca_work_id": None,
+            "consecutive_failures": 0,
+        })
+        if ok:
+            cleanup_fileshare()
         sys.exit(0)
 
     total = sum(len(r) for r in stream_records.values())
@@ -164,7 +252,24 @@ def main() -> None:
     print("[3/3] Converting to Parquet and uploading...")
     uploaded = upload_to_blob(stream_records)
 
-    print(f"\nUpload complete: {len(uploaded)} files uploaded")
+    # 4. Extract Airbyte STATE for incremental sync and report success
+    last_state = extract_last_airbyte_state(content)
+    update_fields: dict = {
+        "last_sync_at": datetime.now(timezone.utc).isoformat(),
+        "last_sync_status": "success",
+        "last_sync_error": None,
+        "aca_execution_name": None,
+        "aca_work_id": None,
+        "consecutive_failures": 0,
+    }
+    if last_state is not None:
+        update_fields["last_airbyte_state"] = last_state
+    ok = _update_supabase(update_fields)
+    if ok:
+        cleanup_fileshare()
+
+    print(f"\nUpload complete: {len(uploaded)} files uploaded"
+          f" | state_captured={last_state is not None}")
 
 
 if __name__ == "__main__":

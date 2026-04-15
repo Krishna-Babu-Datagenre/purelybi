@@ -31,6 +31,12 @@ from supabase import Client, create_client
 
 logger = logging.getLogger(__name__)
 
+
+def _slug(name: str, max_len: int = 24) -> str:
+    """Normalise a connector name into a short, filesystem-safe slug."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:max_len]
+
 # ── Environment variables ─────────────────────────────────────────────
 # Read lazily so that import-time failures surface inside main() where
 # the Functions host can capture and display them in invocation logs.
@@ -185,6 +191,7 @@ def start_uploader_execution(
     user_id: str,
     docker_image: str,
     *,
+    config_id: str = "",
     credential: DefaultAzureCredential | None = None,
 ) -> str:
     """Start the sync-uploader image on the ACA Job. Returns execution_name."""
@@ -196,10 +203,13 @@ def start_uploader_execution(
         {"name": "WORK_ID", "value": work_id},
         {"name": "USER_ID", "value": user_id},
         {"name": "DOCKER_IMAGE", "value": docker_image},
+        {"name": "CONFIG_ID", "value": config_id},
         {"name": "AZURE_FILE_SHARE_CONN_STR", "value": FILESHARE_CONN_STR},
         {"name": "AZURE_FILE_SHARE_NAME", "value": FILESHARE_NAME},
         {"name": "AZURE_STORAGE_CONNECTION_STRING", "value": BLOB_CONN_STR},
         {"name": "BLOB_CONTAINER_NAME", "value": BLOB_CONTAINER},
+        {"name": "SUPABASE_URL", "value": SUPABASE_URL},
+        {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": SUPABASE_SERVICE_KEY},
     ]
 
     container_override = {
@@ -266,8 +276,8 @@ def poll_execution_status(
             return "failed"
         return "running"
     except Exception as exc:
-        logger.warning("poll_error: %s — %s", execution_name, exc)
-        return "running"
+        logger.error("poll_error: %s — %s", execution_name, exc)
+        return "poll_error"
 
 
 # ── Credential refresh (inlined from credential_refresh.py) ──────────
@@ -388,8 +398,8 @@ def get_eligible_configs(supabase: Client) -> list[dict]:
 
     Eligibility rules:
       * ``is_active`` and ``sync_validated`` must be True.
-      * Not currently in-flight (``queued``, ``reading``, ``uploading``,
-        ``reauth_required``).
+      * Status must be in (``pending``, ``success``, ``failed``) — allowlist
+        approach so unexpected statuses never slip through.
       * Circuit breaker: ≥ MAX_CONSECUTIVE_FAILURES consecutive failures → skip.
       * **one_off**: eligible only when ``last_sync_at IS NULL``.
       * **recurring**: eligible when ``last_sync_at IS NULL`` OR elapsed
@@ -400,15 +410,15 @@ def get_eligible_configs(supabase: Client) -> list[dict]:
     config JSONB and passed directly to the Airbyte connector.
     """
     now = datetime.now(timezone.utc)
+    # Allowlist: only configs in a terminal/initial status are eligible.
+    # This prevents configs with unexpected statuses (e.g. "running") from
+    # being picked up.
     response = (
         supabase.table("user_connector_configs")
         .select("*")
         .eq("is_active", True)
         .eq("sync_validated", True)
-        .neq("last_sync_status", "queued")
-        .neq("last_sync_status", "reading")
-        .neq("last_sync_status", "uploading")
-        .neq("last_sync_status", "reauth_required")
+        .in_("last_sync_status", ["pending", "success", "failed"])
         .execute()
     )
 
@@ -449,7 +459,15 @@ def mark_status(supabase: Client, config_id: str, **fields) -> None:
 
 
 def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) -> int:
-    """Phase 1: Check configs where the uploader is running."""
+    """Phase 1 (safety net): Reconcile configs still at 'uploading'.
+
+    The sync-uploader now writes success/state directly to Supabase on
+    completion, so most uploads will have transitioned to 'success' before
+    this phase runs.  This phase catches edge cases:
+      • Uploader crashed before its Supabase callback
+      • Supabase callback failed (network, timeout)
+      • ACA execution stuck / timed out
+    """
     configs = get_configs_by_status(supabase, "uploading")
     completed = 0
 
@@ -459,14 +477,35 @@ def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) 
         work_id = config.get("aca_work_id", "")
 
         if not execution_name:
+            failures = (config.get("consecutive_failures") or 0) + 1
             mark_status(supabase, config_id,
                         last_sync_status="failed",
-                        last_sync_error="No uploader execution name tracked")
+                        last_sync_error="No uploader execution name tracked",
+                        consecutive_failures=failures)
             continue
 
         status = poll_execution_status(execution_name, credential=credential)
 
         if status == "running":
+            continue
+
+        if status == "poll_error":
+            # Can't reach Azure API — apply staleness timeout
+            updated = config.get("updated_at")
+            if updated:
+                updated_dt = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                stuck_minutes = (datetime.now(timezone.utc) - updated_dt).total_seconds() / 60
+                if stuck_minutes > 120:
+                    failures = (config.get("consecutive_failures") or 0) + 1
+                    mark_status(supabase, config_id,
+                                last_sync_status="failed",
+                                last_sync_error=f"Uploader stale (Azure API unreachable for {int(stuck_minutes)} min)",
+                                aca_execution_name=None,
+                                aca_work_id=None,
+                                consecutive_failures=failures)
+                    cleanup_fileshare(work_id)
+                    logger.warning("Uploader stale-failed: config=%s stuck=%dmin",
+                                   config_id, int(stuck_minutes))
             continue
 
         if status == "succeeded":
@@ -521,14 +560,35 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
         work_id = config.get("aca_work_id", "")
 
         if not execution_name:
+            failures = (config.get("consecutive_failures") or 0) + 1
             mark_status(supabase, config_id,
                         last_sync_status="failed",
-                        last_sync_error="No connector execution name tracked")
+                        last_sync_error="No connector execution name tracked",
+                        consecutive_failures=failures)
             continue
 
         status = poll_execution_status(execution_name, credential=credential)
 
         if status == "running":
+            continue
+
+        if status == "poll_error":
+            # Can't reach Azure API — apply staleness timeout
+            updated = config.get("updated_at")
+            if updated:
+                updated_dt = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+                stuck_minutes = (datetime.now(timezone.utc) - updated_dt).total_seconds() / 60
+                if stuck_minutes > 120:
+                    failures = (config.get("consecutive_failures") or 0) + 1
+                    mark_status(supabase, config_id,
+                                last_sync_status="failed",
+                                last_sync_error=f"Connector stale (Azure API unreachable for {int(stuck_minutes)} min)",
+                                aca_execution_name=None,
+                                aca_work_id=None,
+                                consecutive_failures=failures)
+                    cleanup_fileshare(work_id)
+                    logger.warning("Connector stale-failed: config=%s stuck=%dmin",
+                                   config_id, int(stuck_minutes))
             continue
 
         if status == "succeeded":
@@ -538,6 +598,7 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
                     work_id=work_id,
                     user_id=config["user_id"],
                     docker_image=config["docker_image"],
+                    config_id=config_id,
                     credential=credential,
                 )
                 mark_status(supabase, config_id,
@@ -576,8 +637,9 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
 
     for config in eligible:
         config_id = config["id"]
-        correlation_id = uuid4().hex[:8]
-        work_id = f"sync-{config_id[:8]}-{correlation_id}"
+        connector = _slug(config.get("connector_name", "unknown"))
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        work_id = f"sync-{connector}-{config_id[:8]}-{ts}"
 
         try:
             raw_config = config["config"]
@@ -606,7 +668,12 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
             # Get catalog: prefer cached from onboarding, otherwise we'd need to discover
             catalog = config.get("discovered_catalog")
             if not catalog:
-                logger.warning("No discovered_catalog for config %s — skipping (run discover first)", config_id)
+                failures = (config.get("consecutive_failures") or 0) + 1
+                mark_status(supabase, config_id,
+                            last_sync_status="failed",
+                            last_sync_error="No discovered_catalog — run discover first",
+                            consecutive_failures=failures)
+                logger.warning("No discovered_catalog for config %s", config_id)
                 continue
 
             # Build configured catalog for selected streams.
@@ -619,9 +686,11 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
                 prefer_incremental=incremental,
             )
             if not configured.get("streams"):
+                failures = (config.get("consecutive_failures") or 0) + 1
                 mark_status(supabase, config_id,
                             last_sync_status="failed",
-                            last_sync_error="No streams in configured catalog")
+                            last_sync_error="No streams in configured catalog",
+                            consecutive_failures=failures)
                 continue
 
             # Write config + catalog to File Share
@@ -645,10 +714,11 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
                 credential=credential,
             )
 
-            # Mark as reading with tracking info
+            # Mark as reading with tracking info.
+            # Preserve last_sync_error so previous failures remain
+            # visible during the in-flight phase.
             mark_status(supabase, config_id,
                         last_sync_status="reading",
-                        last_sync_error=None,
                         aca_execution_name=execution_name,
                         aca_work_id=work_id)
             started += 1
