@@ -31,6 +31,8 @@ Usage (in sync_worker.py or Azure Container App job):
         save_updated_config(config, oauth_meta)
 """
 
+from __future__ import annotations
+
 import logging
 import time
 
