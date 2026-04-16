@@ -200,14 +200,18 @@ def build_detailed_error(phase: str, work_id: str, fallback_msg: str = "", *, ac
     """
     stderr = read_from_fileshare(work_id, "stderr.log") if work_id else ""
     jsonl = read_from_fileshare(work_id, "output.jsonl") if work_id else ""
+    debug = read_from_fileshare(work_id, "debug.log") if work_id else ""
     structured_errors = parse_errors_from_jsonl(jsonl) if jsonl else ""
 
-    # Combine: structured errors from JSONL take priority, stderr as supplement
+    # Combine: structured errors from JSONL take priority, stderr as supplement,
+    # debug.log for exit code, ACA detail for infrastructure-level info.
     parts: list[str] = []
     if structured_errors:
         parts.append(f"[JSONL errors] {structured_errors}")
     if stderr:
         parts.append(f"[stderr] {stderr[:4000]}")
+    if debug:
+        parts.append(f"[debug] {debug.strip()[:500]}")
     if aca_detail:
         parts.append(f"[ACA container] {aca_detail}")
     if not parts:
@@ -306,7 +310,12 @@ def start_uploader_execution(
     config_id: str = "",
     credential: DefaultAzureCredential | None = None,
 ) -> str:
-    """Start the sync-uploader image on the ACA Job. Returns execution_name."""
+    """Start the sync-uploader image on the ACA Job. Returns execution_name.
+
+    Wraps the Python entrypoint in a shell script that redirects stderr
+    to the file share so that crash-level failures (OOM kill, import errors,
+    segfaults) are captured even when the Python process can't self-report.
+    """
     if credential is None:
         credential = DefaultAzureCredential()
     client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
@@ -324,9 +333,24 @@ def start_uploader_execution(
         {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": SUPABASE_SERVICE_KEY},
     ]
 
+    # Wrap in a shell script to capture stderr to the file share.
+    # On OOM kill or segfault the kernel writes nothing, but any Python-level
+    # crash (import errors, missing deps, uncaught exceptions) will be in
+    # stderr.log.  The exit-code is recorded in debug.log so the orchestrator
+    # can distinguish clean exits from crashes.
+    shell_script = (
+        f"python /app/sync_uploader.py "
+        f"2>/data/{work_id}/stderr.log; "
+        f"RC=$?; "
+        f"echo \"RC=$RC\" >> /data/{work_id}/debug.log; "
+        f"exit $RC"
+    )
+
     container_override = {
         "name": ACA_JOB_CONTAINER_NAME,
         "image": SYNC_UPLOADER_IMAGE,
+        "command": ["/bin/sh"],
+        "args": ["-c", shell_script],
         "env": env_list,
     }
 
