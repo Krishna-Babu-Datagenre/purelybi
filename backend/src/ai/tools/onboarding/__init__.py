@@ -55,8 +55,30 @@ def _coerce_str_list(val: Any) -> list[str]:
     return []
 
 
-def _sync_schedule_form_fields() -> list[dict[str, Any]]:
-    return [
+def _catalog_has_incremental_streams(
+    catalog: dict[str, Any] | None,
+    selected_streams: list[str] | None = None,
+) -> bool:
+    """Return True if any (selected) stream in the discovered catalog supports incremental sync."""
+    if not catalog or not isinstance(catalog, dict):
+        return False
+    name_set = set(selected_streams) if selected_streams else None
+    for stream_obj in catalog.get("streams", []) or []:
+        if not isinstance(stream_obj, dict):
+            continue
+        name = stream_obj.get("name")
+        if name_set and name not in name_set:
+            continue
+        modes = stream_obj.get("supported_sync_modes") or []
+        if "incremental" in modes:
+            return True
+    return False
+
+
+def _sync_schedule_form_fields(
+    *, has_incremental_streams: bool = False,
+) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = [
         {
             "key": "sync_mode",
             "label": "Sync type",
@@ -103,6 +125,23 @@ def _sync_schedule_form_fields() -> list[dict[str, Any]]:
             ),
         },
     ]
+    if has_incremental_streams:
+        fields.append(
+            {
+                "key": "incremental_enabled",
+                "label": "Enable incremental sync",
+                "type": "boolean",
+                "required": False,
+                "default": True,
+                "description": (
+                    "When enabled, recurring syncs will fetch only new and updated "
+                    "records since the last sync (for streams that support it). "
+                    "Streams without incremental support automatically fall back to "
+                    "full refresh. Recommended for most use cases."
+                ),
+            }
+        )
+    return fields
 
 
 def _resolve_sync_schedule(raw: Any) -> tuple[str, int] | None:
@@ -352,6 +391,7 @@ def run_sync(connector_name: str, streams: list[str] | None = None) -> str:
             sync_mode=str(existing.get("sync_mode") or "recurring"),
             sync_frequency_minutes=int(existing.get("sync_frequency_minutes") or 360),
             sync_validated=bool(ONBOARDING_DOCKER_ENABLED),
+            incremental_enabled=bool(existing.get("incremental_enabled", False)),
         )
     except Exception as e:
         logger.exception("run_sync upsert failed")
@@ -415,6 +455,11 @@ def save_config(
     if selected_streams:
         cfg["__selected_streams__"] = selected_streams
 
+    discovered_catalog = stores.get_tool_kv("discovered_catalog")
+    has_incremental = _catalog_has_incremental_streams(
+        discovered_catalog, selected_streams,
+    )
+
     schedule_raw = stores.get_tool_kv("sync_schedule")
     resolved = _resolve_sync_schedule(schedule_raw)
     if resolved is None:
@@ -422,7 +467,9 @@ def save_config(
             "pending_ui",
             {
                 "type": "input_fields",
-                "fields": _sync_schedule_form_fields(),
+                "fields": _sync_schedule_form_fields(
+                    has_incremental_streams=has_incremental,
+                ),
             },
         )
         return json.dumps(
@@ -454,7 +501,10 @@ def save_config(
             if s:
                 cfg["start_date"] = s
 
-    discovered_catalog = stores.get_tool_kv("discovered_catalog")
+    # Resolve incremental preference from the schedule form.  The toggle only
+    # appears when the catalog has incremental-capable streams, so default to
+    # False when the key is absent (i.e. the toggle was never shown).
+    incremental_enabled = bool((schedule_raw or {}).get("incremental_enabled", False))
 
     try:
         upsert_user_connector_onboarding(
@@ -469,6 +519,7 @@ def save_config(
             sync_mode=sync_mode,
             sync_frequency_minutes=sync_frequency_minutes,
             sync_validated=False,
+            incremental_enabled=incremental_enabled,
         )
     except Exception as e:
         logger.exception("save_config failed")
@@ -590,11 +641,15 @@ def render_stream_selector(streams: list[dict]) -> str:
 @tool
 def render_sync_schedule_form() -> str:
     """Render the required sync schedule form (one-off or recurring) and wait for submission."""
+    discovered_catalog = stores.get_tool_kv("discovered_catalog")
+    has_incremental = _catalog_has_incremental_streams(discovered_catalog)
     stores.set_tool_kv(
         "pending_ui",
         {
             "type": "input_fields",
-            "fields": _sync_schedule_form_fields(),
+            "fields": _sync_schedule_form_fields(
+                has_incremental_streams=has_incremental,
+            ),
         },
     )
     return (

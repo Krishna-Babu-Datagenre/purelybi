@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import time
+import traceback
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
@@ -144,6 +145,117 @@ def cleanup_fileshare(work_id: str) -> None:
         logger.warning("Cleanup failed for %s: %s", work_id, exc)
 
 
+# ── Error extraction helpers ──────────────────────────────────────────
+
+
+def parse_errors_from_jsonl(jsonl: str, max_chars: int = 4000) -> str:
+    """Extract structured error messages from Airbyte JSONL output.
+
+    Connectors emit errors as structured JSON on stdout using TRACE (with
+    error), LOG (level FATAL/ERROR), or ERROR message types. Returns a
+    combined string or "" if none found.
+    """
+    errors: list[str] = []
+    total = 0
+    for line in jsonl.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            t = msg.get("type", "")
+
+            text = ""
+            if t == "TRACE":
+                err = (msg.get("trace") or {}).get("error")
+                if err:
+                    text = err.get("message") or err.get("internal_message") or ""
+            elif t == "LOG":
+                log = msg.get("log") or {}
+                if str(log.get("level", "")).upper() in ("FATAL", "ERROR"):
+                    text = log.get("message", "")
+            elif t == "ERROR":
+                text = msg.get("message") or msg.get("error", {}).get("message", "")
+
+            if text:
+                errors.append(text.strip())
+                total += len(errors[-1])
+                if total >= max_chars:
+                    break
+        except json.JSONDecodeError:
+            continue
+
+    return " | ".join(errors)[:max_chars]
+
+
+def build_detailed_error(phase: str, work_id: str, fallback_msg: str = "", *, aca_detail: str = "") -> dict:
+    """Build a detailed error entry from fileshare logs and ACA execution info.
+
+    Reads stderr.log and output.jsonl from the file share to extract the
+    full error context, similar to the onboarding agent's pattern.
+    When fileshare logs are empty (e.g. OOM kill before any I/O), falls
+    back to ACA-level container detail (exit code, termination reason).
+
+    Returns a dict: {"ts": "<ISO>", "phase": "<phase>", "error": "<detail>"}
+    """
+    stderr = read_from_fileshare(work_id, "stderr.log") if work_id else ""
+    jsonl = read_from_fileshare(work_id, "output.jsonl") if work_id else ""
+    structured_errors = parse_errors_from_jsonl(jsonl) if jsonl else ""
+
+    # Combine: structured errors from JSONL take priority, stderr as supplement
+    parts: list[str] = []
+    if structured_errors:
+        parts.append(f"[JSONL errors] {structured_errors}")
+    if stderr:
+        parts.append(f"[stderr] {stderr[:4000]}")
+    if aca_detail:
+        parts.append(f"[ACA container] {aca_detail}")
+    if not parts:
+        parts.append(fallback_msg or "No error details available")
+
+    return {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "phase": phase,
+        "error": "\n".join(parts)[:8000],
+    }
+
+
+def append_error_log(
+    supabase: Client,
+    config_id: str,
+    error_entry: dict,
+    consecutive_failures: int,
+) -> list:
+    """Append an error entry to sync_error_log in Supabase.
+
+    Reads the current array, appends the new entry, and caps the log
+    at MAX_CONSECUTIVE_FAILURES entries (keeping the most recent).
+    Returns the updated array.
+    """
+    try:
+        resp = (
+            supabase.table("user_connector_configs")
+            .select("sync_error_log")
+            .eq("id", config_id)
+            .single()
+            .execute()
+        )
+        existing_log = resp.data.get("sync_error_log") or []
+    except Exception:
+        existing_log = []
+
+    if not isinstance(existing_log, list):
+        existing_log = []
+
+    existing_log.append(error_entry)
+
+    # Keep only last MAX_CONSECUTIVE_FAILURES entries
+    if len(existing_log) > MAX_CONSECUTIVE_FAILURES:
+        existing_log = existing_log[-MAX_CONSECUTIVE_FAILURES:]
+
+    return existing_log
+
+
 # ── ACA Job execution ────────────────────────────────────────────────
 
 
@@ -231,8 +343,15 @@ def poll_execution_status(
     execution_name: str,
     *,
     credential: DefaultAzureCredential | None = None,
-) -> str:
-    """Returns 'running', 'succeeded', or 'failed'."""
+) -> tuple[str, str]:
+    """Poll an ACA Job execution.
+
+    Returns (status, detail) where:
+      * *status* is one of ``'running'``, ``'succeeded'``, ``'failed'``, or
+        ``'poll_error'``.
+      * *detail* is a human-readable string with container-level information
+        (e.g. exit code, OOMKilled reason) or ``""`` when unavailable.
+    """
     if credential is None:
         credential = DefaultAzureCredential()
     client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
@@ -259,25 +378,83 @@ def poll_execution_status(
             else:
                 raise RuntimeError("No supported ACA job execution getter")
 
-        status = ""
+        # ── Extract status string ────────────────────────────────────
+        raw_status = ""
+        props: Any = None
         if isinstance(execution, dict):
-            status = (execution.get("properties") or {}).get("status", "")
+            props = execution.get("properties") or {}
+            raw_status = props.get("status", "")
         else:
-            status = str(
-                getattr(getattr(execution, "properties", None), "status", None)
+            props = getattr(execution, "properties", None) or execution
+            raw_status = str(
+                getattr(props, "status", None)
                 or getattr(execution, "status", "")
                 or ""
             )
-        status = status.strip().lower()
+        raw_status = raw_status.strip().lower()
 
-        if status in ("succeeded", "completed", "success"):
-            return "succeeded"
-        if status in ("failed", "canceled", "cancelled", "stopped", "error"):
-            return "failed"
-        return "running"
+        # ── Extract container-level detail (exit code, reason, message) ─
+        detail_parts: list[str] = []
+        try:
+            # ACA Job executions expose container statuses under
+            # properties.template.containers[].containerAppContainerStatuses
+            # or sometimes under properties.status + properties.detailedStatus.
+            # We try multiple paths since the SDK shape varies by version.
+            containers = None
+            if isinstance(props, dict):
+                tpl = props.get("template") or {}
+                containers = tpl.get("containers")
+                # Also check detailedStatus at the execution level
+                ds = props.get("detailedStatus") or props.get("detailed_status")
+                if ds:
+                    detail_parts.append(f"detailedStatus: {ds}")
+            else:
+                tpl = getattr(props, "template", None)
+                if tpl:
+                    containers = getattr(tpl, "containers", None)
+                ds = getattr(props, "detailed_status", None) or getattr(props, "detailedStatus", None)
+                if ds:
+                    detail_parts.append(f"detailedStatus: {ds}")
+
+            if containers:
+                for c in (containers if isinstance(containers, list) else [containers]):
+                    statuses = None
+                    if isinstance(c, dict):
+                        statuses = c.get("containerAppContainerStatuses") or c.get("status")
+                    else:
+                        statuses = getattr(c, "container_app_container_statuses", None) or getattr(c, "status", None)
+
+                    if statuses and not isinstance(statuses, list):
+                        statuses = [statuses]
+                    for s in (statuses or []):
+                        if isinstance(s, dict):
+                            exit_code = s.get("exitCode") or s.get("exit_code")
+                            reason = s.get("reason") or s.get("terminationReason") or ""
+                            message = s.get("message") or ""
+                        else:
+                            exit_code = getattr(s, "exit_code", None) or getattr(s, "exitCode", None)
+                            reason = getattr(s, "reason", "") or getattr(s, "termination_reason", "") or ""
+                            message = getattr(s, "message", "") or ""
+
+                        if exit_code is not None:
+                            detail_parts.append(f"exitCode={exit_code}")
+                        if reason:
+                            detail_parts.append(f"reason={reason}")
+                        if message:
+                            detail_parts.append(f"message={message}")
+        except Exception as detail_exc:
+            logger.debug("Could not extract container detail: %s", detail_exc)
+
+        detail = " | ".join(detail_parts)[:2000] if detail_parts else ""
+
+        if raw_status in ("succeeded", "completed", "success"):
+            return "succeeded", detail
+        if raw_status in ("failed", "canceled", "cancelled", "stopped", "error"):
+            return "failed", detail or f"ACA execution status: {raw_status}"
+        return "running", detail
     except Exception as exc:
         logger.error("poll_error: %s — %s", execution_name, exc)
-        return "poll_error"
+        return "poll_error", str(exc)[:500]
 
 
 # ── Credential refresh (inlined from credential_refresh.py) ──────────
@@ -478,13 +655,20 @@ def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) 
 
         if not execution_name:
             failures = (config.get("consecutive_failures") or 0) + 1
+            error_entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "phase": "uploader",
+                "error": "No uploader execution name tracked",
+            }
+            error_log = append_error_log(supabase, config_id, error_entry, failures)
             mark_status(supabase, config_id,
                         last_sync_status="failed",
                         last_sync_error="No uploader execution name tracked",
-                        consecutive_failures=failures)
+                        consecutive_failures=failures,
+                        sync_error_log=error_log)
             continue
 
-        status = poll_execution_status(execution_name, credential=credential)
+        status, aca_detail = poll_execution_status(execution_name, credential=credential)
 
         if status == "running":
             continue
@@ -497,12 +681,19 @@ def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) 
                 stuck_minutes = (datetime.now(timezone.utc) - updated_dt).total_seconds() / 60
                 if stuck_minutes > 120:
                     failures = (config.get("consecutive_failures") or 0) + 1
+                    stale_msg = f"Uploader stale (Azure API unreachable for {int(stuck_minutes)} min)"
+                    error_entry = build_detailed_error(
+                        "uploader", work_id, stale_msg,
+                        aca_detail=aca_detail,
+                    )
+                    error_log = append_error_log(supabase, config_id, error_entry, failures)
                     mark_status(supabase, config_id,
                                 last_sync_status="failed",
-                                last_sync_error=f"Uploader stale (Azure API unreachable for {int(stuck_minutes)} min)",
+                                last_sync_error=stale_msg,
                                 aca_execution_name=None,
                                 aca_work_id=None,
-                                consecutive_failures=failures)
+                                consecutive_failures=failures,
+                                sync_error_log=error_log)
                     cleanup_fileshare(work_id)
                     logger.warning("Uploader stale-failed: config=%s stuck=%dmin",
                                    config_id, int(stuck_minutes))
@@ -526,6 +717,7 @@ def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) 
                 "aca_execution_name": None,
                 "aca_work_id": None,
                 "consecutive_failures": 0,
+                "sync_error_log": [],  # Clear on success
             }
             if last_state is not None:
                 update_fields["last_airbyte_state"] = last_state
@@ -535,14 +727,18 @@ def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) 
             logger.info("Upload succeeded: config=%s state_captured=%s",
                         config_id, last_state is not None)
         else:
-            stderr = read_from_fileshare(work_id, "stderr.log") if work_id else ""
+            # Uploader failed — capture detailed error from fileshare logs + ACA detail
             failures = (config.get("consecutive_failures") or 0) + 1
+            error_entry = build_detailed_error("uploader", work_id, "Uploader failed", aca_detail=aca_detail)
+            error_log = append_error_log(supabase, config_id, error_entry, failures)
+            short_msg = error_entry["error"][:2000]
             mark_status(supabase, config_id,
                         last_sync_status="failed",
-                        last_sync_error=f"Uploader failed: {stderr[:2000]}" if stderr else "Uploader failed",
+                        last_sync_error=f"Uploader failed: {short_msg}",
                         aca_execution_name=None,
                         aca_work_id=None,
-                        consecutive_failures=failures)
+                        consecutive_failures=failures,
+                        sync_error_log=error_log)
             cleanup_fileshare(work_id)
             logger.warning("Upload failed: config=%s", config_id)
 
@@ -561,13 +757,20 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
 
         if not execution_name:
             failures = (config.get("consecutive_failures") or 0) + 1
+            error_entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "phase": "connector",
+                "error": "No connector execution name tracked",
+            }
+            error_log = append_error_log(supabase, config_id, error_entry, failures)
             mark_status(supabase, config_id,
                         last_sync_status="failed",
                         last_sync_error="No connector execution name tracked",
-                        consecutive_failures=failures)
+                        consecutive_failures=failures,
+                        sync_error_log=error_log)
             continue
 
-        status = poll_execution_status(execution_name, credential=credential)
+        status, aca_detail = poll_execution_status(execution_name, credential=credential)
 
         if status == "running":
             continue
@@ -580,12 +783,19 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
                 stuck_minutes = (datetime.now(timezone.utc) - updated_dt).total_seconds() / 60
                 if stuck_minutes > 120:
                     failures = (config.get("consecutive_failures") or 0) + 1
+                    stale_msg = f"Connector stale (Azure API unreachable for {int(stuck_minutes)} min)"
+                    error_entry = build_detailed_error(
+                        "connector", work_id, stale_msg,
+                        aca_detail=aca_detail,
+                    )
+                    error_log = append_error_log(supabase, config_id, error_entry, failures)
                     mark_status(supabase, config_id,
                                 last_sync_status="failed",
-                                last_sync_error=f"Connector stale (Azure API unreachable for {int(stuck_minutes)} min)",
+                                last_sync_error=stale_msg,
                                 aca_execution_name=None,
                                 aca_work_id=None,
-                                consecutive_failures=failures)
+                                consecutive_failures=failures,
+                                sync_error_log=error_log)
                     cleanup_fileshare(work_id)
                     logger.warning("Connector stale-failed: config=%s stuck=%dmin",
                                    config_id, int(stuck_minutes))
@@ -609,21 +819,32 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
                             config_id, uploader_exec)
             except Exception as exc:
                 failures = (config.get("consecutive_failures") or 0) + 1
+                error_entry = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "phase": "orchestrator",
+                    "error": f"Failed to start uploader: {exc}",
+                }
+                error_log = append_error_log(supabase, config_id, error_entry, failures)
                 mark_status(supabase, config_id,
                             last_sync_status="failed",
                             last_sync_error=f"Failed to start uploader: {exc}"[:2000],
                             aca_execution_name=None,
-                            consecutive_failures=failures)
+                            consecutive_failures=failures,
+                            sync_error_log=error_log)
                 logger.exception("Failed to start uploader: config=%s", config_id)
         else:
-            stderr = read_from_fileshare(work_id, "stderr.log") if work_id else ""
+            # Connector failed — capture detailed error from fileshare logs + ACA detail
             failures = (config.get("consecutive_failures") or 0) + 1
+            error_entry = build_detailed_error("connector", work_id, "Connector failed", aca_detail=aca_detail)
+            error_log = append_error_log(supabase, config_id, error_entry, failures)
+            short_msg = error_entry["error"][:2000]
             mark_status(supabase, config_id,
                         last_sync_status="failed",
-                        last_sync_error=f"Connector failed: {stderr[:2000]}" if stderr else "Connector failed",
+                        last_sync_error=f"Connector failed: {short_msg}",
                         aca_execution_name=None,
                         aca_work_id=None,
-                        consecutive_failures=failures)
+                        consecutive_failures=failures,
+                        sync_error_log=error_log)
             cleanup_fileshare(work_id)
             logger.warning("Connector failed: config=%s", config_id)
 
@@ -669,10 +890,17 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
             catalog = config.get("discovered_catalog")
             if not catalog:
                 failures = (config.get("consecutive_failures") or 0) + 1
+                error_entry = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "phase": "orchestrator",
+                    "error": "No discovered_catalog — run discover first",
+                }
+                error_log = append_error_log(supabase, config_id, error_entry, failures)
                 mark_status(supabase, config_id,
                             last_sync_status="failed",
                             last_sync_error="No discovered_catalog — run discover first",
-                            consecutive_failures=failures)
+                            consecutive_failures=failures,
+                            sync_error_log=error_log)
                 logger.warning("No discovered_catalog for config %s", config_id)
                 continue
 
@@ -687,10 +915,17 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
             )
             if not configured.get("streams"):
                 failures = (config.get("consecutive_failures") or 0) + 1
+                error_entry = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "phase": "orchestrator",
+                    "error": "No streams in configured catalog",
+                }
+                error_log = append_error_log(supabase, config_id, error_entry, failures)
                 mark_status(supabase, config_id,
                             last_sync_status="failed",
                             last_sync_error="No streams in configured catalog",
-                            consecutive_failures=failures)
+                            consecutive_failures=failures,
+                            sync_error_log=error_log)
                 continue
 
             # Write config + catalog to File Share
@@ -727,10 +962,17 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
 
         except Exception as exc:
             failures = (config.get("consecutive_failures") or 0) + 1
+            error_entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "phase": "orchestrator",
+                "error": traceback.format_exc()[:8000],
+            }
+            error_log = append_error_log(supabase, config_id, error_entry, failures)
             mark_status(supabase, config_id,
                         last_sync_status="failed",
                         last_sync_error=f"Failed to start sync: {exc}"[:2000],
-                        consecutive_failures=failures)
+                        consecutive_failures=failures,
+                        sync_error_log=error_log)
             logger.exception("Failed to start sync: config=%s", config_id)
 
     return started
@@ -740,7 +982,13 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
 
 
 def main(timer: func.TimerRequest) -> None:
-    """Timer trigger entry point — runs every 5 minutes."""
+    """Timer trigger entry point — runs every 5 minutes.
+
+    Wrapped in a broad try/except so that crash-level failures (import
+    errors, broken dependencies, Azure credential issues, Supabase client
+    init failures) are logged clearly rather than silently killing the
+    function with no trace.
+    """
     try:
         _get_env_vars()
     except KeyError:
@@ -750,19 +998,30 @@ def main(timer: func.TimerRequest) -> None:
     if timer.past_due:
         logger.warning("Timer trigger is past due — running catch-up")
 
-    supabase = get_supabase()
-    credential = DefaultAzureCredential()
+    try:
+        supabase = get_supabase()
+        credential = DefaultAzureCredential()
 
-    # Phase 1: Check uploaders (uploading → success/failed)
-    uploads_completed = phase_check_uploading(supabase, credential)
+        # Phase 1: Check uploaders (uploading → success/failed)
+        uploads_completed = phase_check_uploading(supabase, credential)
 
-    # Phase 2: Check connectors (reading → uploading/failed)
-    connectors_done = phase_check_reading(supabase, credential)
+        # Phase 2: Check connectors (reading → uploading/failed)
+        connectors_done = phase_check_reading(supabase, credential)
 
-    # Phase 3: Start new syncs (eligible → reading)
-    new_started = phase_start_new_syncs(supabase, credential)
+        # Phase 3: Start new syncs (eligible → reading)
+        new_started = phase_start_new_syncs(supabase, credential)
 
-    logger.info(
-        "Orchestrator V2 tick: uploads_completed=%d connectors_done=%d new_started=%d",
-        uploads_completed, connectors_done, new_started,
-    )
+        logger.info(
+            "Orchestrator V2 tick: uploads_completed=%d connectors_done=%d new_started=%d",
+            uploads_completed, connectors_done, new_started,
+        )
+    except Exception:
+        # Catch-all for unexpected crashes (broken imports, Azure auth
+        # failures, Supabase init errors, etc.).  The Azure Functions
+        # host will log this exception and mark the invocation as failed,
+        # but we log explicitly so the message is easy to find.
+        logger.exception(
+            "FATAL: Orchestrator tick crashed — configs in 'reading'/'uploading' "
+            "will be reconciled on the next successful tick via staleness timeout"
+        )
+        raise

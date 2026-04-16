@@ -506,6 +506,7 @@ def upsert_user_connector_onboarding(
     sync_frequency_minutes: int = 360,
     sync_validated: bool = False,
     is_active: bool = True,
+    incremental_enabled: bool = False,
 ) -> dict[str, Any]:
     """Create or update the **active** row for (user_id, docker_repository)."""
     existing = get_active_user_connector_by_repository(user_id, docker_repository)
@@ -520,6 +521,7 @@ def upsert_user_connector_onboarding(
             sync_frequency_minutes=sync_frequency_minutes,
             sync_validated=sync_validated,
             is_active=is_active,
+            incremental_enabled=incremental_enabled,
         )
         result = update_user_connector(user_id, existing["id"], patch)
         # Save discovered catalog separately (not in the Pydantic model)
@@ -540,6 +542,7 @@ def upsert_user_connector_onboarding(
         sync_mode=sync_mode,
         sync_frequency_minutes=sync_frequency_minutes,
         is_active=is_active,
+        incremental_enabled=incremental_enabled,
     )
     result = create_user_connector(user_id, body)
     # Save discovered catalog separately (not in the Pydantic model)

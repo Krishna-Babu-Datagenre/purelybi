@@ -175,11 +175,33 @@ WHERE id = '<config_id>';
 
 ## Incremental Sync
 
+### How `incremental_enabled` gets set
+
+During onboarding, after stream discovery, the system inspects the Airbyte
+`discovered_catalog` to check whether any of the user's selected streams
+advertise `"incremental"` in their `supported_sync_modes`. If at least one
+stream supports it, the **sync schedule form** includes an "Enable incremental
+sync" toggle (defaults to checked). The user's choice is persisted to
+`incremental_enabled` in `user_connector_configs` via `save_config` →
+`upsert_user_connector_onboarding`.
+
+Key rules:
+- The toggle **only appears** when the catalog has incremental-capable streams.
+- One-off syncs always set `incremental_enabled = false`.
+- `run_sync` preserves the existing `incremental_enabled` value from the row
+  (it reads `existing.get("incremental_enabled")` so it never overwrites it).
+- The flag can also be toggled after onboarding via `PATCH /api/connectors/{id}`
+  with `{"incremental_enabled": true}`.
+
+### Runtime behaviour
+
 When `incremental_enabled = true`:
 1. Catalog is built with `incremental` + `append` (instead of `full_refresh` + `overwrite`)
 2. Last Airbyte STATE message is persisted in `last_airbyte_state` (JSONB column)
 3. STATE is written to file share as `state.json` and passed via `--state` flag on next run
 4. Uploader deduplicates by `_airbyte_ab_id` during Parquet merge
+5. Streams that do **not** support incremental automatically fall back to
+   `full_refresh` + `overwrite` — the flag is safe to enable even with mixed catalogs.
 
 STATE is captured in **two places** for redundancy:
 - By the sync-uploader (during its Supabase callback)

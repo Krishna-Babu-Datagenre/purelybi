@@ -163,7 +163,7 @@ def _parse_sync_schedule(values: dict[str, object]) -> dict[str, object] | None:
         return None
 
     if mode == "one_off":
-        return {"mode": "one_off", "frequency_minutes": None, "start_date": None}
+        return {"mode": "one_off", "frequency_minutes": None, "start_date": None, "incremental_enabled": False}
 
     unit = str(values.get("interval_unit") or "").strip().lower()
     if unit not in {"minutes", "hours", "days"}:
@@ -190,7 +190,18 @@ def _parse_sync_schedule(values: dict[str, object]) -> dict[str, object] | None:
         except ValueError:
             start_date = None
 
-    return {"mode": "recurring", "frequency_minutes": freq, "start_date": start_date}
+    # Incremental sync toggle — only present in the form when the discovered
+    # catalog has streams that support incremental mode.  Defaults to False
+    # when the field was not rendered (no incremental-capable streams).
+    raw_inc = values.get("incremental_enabled")
+    incremental_enabled = raw_inc is True or str(raw_inc).strip().lower() == "true"
+
+    return {
+        "mode": "recurring",
+        "frequency_minutes": freq,
+        "start_date": start_date,
+        "incremental_enabled": incremental_enabled,
+    }
 
 
 def _build_init_message(cat: dict) -> str:

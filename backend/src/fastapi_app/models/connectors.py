@@ -78,6 +78,7 @@ class UserConnectorConfigCreate(BaseModel):
     sync_mode: Literal["one_off", "recurring"] = "recurring"
     sync_frequency_minutes: int = Field(default=360, ge=1)
     is_active: bool = True
+    incremental_enabled: bool = False
 
 
 class UserConnectorConfigUpdate(BaseModel):

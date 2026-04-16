@@ -177,6 +177,74 @@ def _update_supabase(fields: dict) -> bool:
         return False
 
 
+def _read_supabase_field(field: str):
+    """Read a single field from the current config row. Returns None on failure."""
+    if not (SUPABASE_URL and SUPABASE_KEY and CONFIG_ID):
+        return None
+    import urllib.request
+    import urllib.error
+
+    url = (
+        f"{SUPABASE_URL}/rest/v1/user_connector_configs"
+        f"?id=eq.{CONFIG_ID}&select={field}"
+    )
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        rows = json.loads(resp.read().decode())
+        if rows:
+            return rows[0].get(field)
+    except Exception as exc:
+        print(f"  WARNING: Failed to read {field} from Supabase: {exc}")
+    return None
+
+
+def _append_error_and_fail(error_detail: str, phase: str = "uploader") -> None:
+    """Append a detailed error entry to sync_error_log and mark the config as failed.
+
+    Reads the existing sync_error_log array, appends the new entry (capped at 5),
+    increments consecutive_failures, then writes everything back.
+    """
+    MAX_ENTRIES = 5
+
+    # Read current state
+    existing_log = _read_supabase_field("sync_error_log") or []
+    consecutive = _read_supabase_field("consecutive_failures") or 0
+
+    if not isinstance(existing_log, list):
+        existing_log = []
+    if not isinstance(consecutive, int):
+        consecutive = 0
+
+    consecutive += 1
+
+    error_entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "phase": phase,
+        "error": error_detail[:8000],
+    }
+    existing_log.append(error_entry)
+    if len(existing_log) > MAX_ENTRIES:
+        existing_log = existing_log[-MAX_ENTRIES:]
+
+    _update_supabase({
+        "last_sync_status": "failed",
+        "last_sync_error": f"Uploader failed: {error_detail[:2000]}",
+        "aca_execution_name": None,
+        "aca_work_id": None,
+        "consecutive_failures": consecutive,
+        "sync_error_log": existing_log,
+    })
+
+
 def upload_to_blob(stream_records: dict[str, list[dict]]) -> list[str]:
     """Convert records to Parquet and upload to Blob Storage with monthly merge."""
     blob_service = BlobServiceClient.from_connection_string(BLOB_CONN)
@@ -240,6 +308,7 @@ def main() -> None:
             "aca_execution_name": None,
             "aca_work_id": None,
             "consecutive_failures": 0,
+            "sync_error_log": [],  # Clear on success
         })
         if ok:
             cleanup_fileshare()
@@ -261,6 +330,7 @@ def main() -> None:
         "aca_execution_name": None,
         "aca_work_id": None,
         "consecutive_failures": 0,
+        "sync_error_log": [],  # Clear on success
     }
     if last_state is not None:
         update_fields["last_airbyte_state"] = last_state
@@ -273,4 +343,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"FATAL ERROR in sync uploader:\n{error_detail}", file=sys.stderr)
+        _append_error_and_fail(error_detail, phase="uploader")
+        sys.exit(1)
