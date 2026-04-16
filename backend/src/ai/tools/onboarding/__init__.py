@@ -320,8 +320,10 @@ def run_sync(connector_name: str, streams: list[str] | None = None) -> str:
                 {
                     "success": False,
                     "message": (
-                        "Docker test read failed — extraction was not verified end-to-end. "
-                        "Fix credentials/streams or check Docker logs."
+                        "Docker test read failed. Read the 'detail' field for the "
+                        "connector error. If it is a config validation error, fix "
+                        "the config and call save_config with the corrected values, "
+                        "then call run_sync again to retry."
                     ),
                     "detail": probe_msg,
                     "docker_stderr": err_tail,
@@ -443,11 +445,14 @@ def save_config(
     # If the user provided a data start_date via the schedule form, inject it
     # into the connector config so the Airbyte connector uses it as the data
     # range start (only relevant for connectors that accept start_date).
-    form_start_date = (schedule_raw or {}).get("start_date")
-    if form_start_date not in (None, ""):
-        s = str(form_start_date).strip()
-        if s:
-            cfg["start_date"] = s
+    # If the agent already supplied start_date in the config dict (e.g. after
+    # correcting a validation error), respect its value instead of overwriting.
+    if "start_date" not in cfg:
+        form_start_date = (schedule_raw or {}).get("start_date")
+        if form_start_date not in (None, ""):
+            s = str(form_start_date).strip()
+            if s:
+                cfg["start_date"] = s
 
     discovered_catalog = stores.get_tool_kv("discovered_catalog")
 
