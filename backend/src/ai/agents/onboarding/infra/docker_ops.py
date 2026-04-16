@@ -461,6 +461,7 @@ def _aca_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bo
     from ai.agents.onboarding.infra.connector_runner import (
         cleanup_fileshare,
         parse_connection_status,
+        parse_errors,
         read_from_fileshare,
         start_connector_execution,
         wait_for_execution,
@@ -486,11 +487,14 @@ def _aca_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bo
         if success:
             jsonl = read_from_fileshare(work_id, "output.jsonl")
             ok, message = parse_connection_status(jsonl)
+            if not ok and not message:
+                message = parse_errors(jsonl) or "Unknown check failure"
             return ok, message or "Connection check succeeded!"
 
+        jsonl = read_from_fileshare(work_id, "output.jsonl")
         stderr = read_from_fileshare(work_id, "stderr.log")
-        debug = read_from_fileshare(work_id, "debug.log")
-        detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+        connector_err = parse_errors(jsonl)
+        detail = connector_err or stderr[:500] or "no output"
         return False, f"Check failed: {detail}"
     finally:
         cleanup_fileshare(work_id)
@@ -511,6 +515,7 @@ def _aca_discover_streams_with_catalog(
     from ai.agents.onboarding.infra.connector_runner import (
         cleanup_fileshare,
         parse_catalog,
+        parse_errors,
         read_from_fileshare,
         start_connector_execution,
         wait_for_execution,
@@ -538,15 +543,14 @@ def _aca_discover_streams_with_catalog(
             streams, catalog = parse_catalog(jsonl)
             if streams:
                 return True, streams, f"Discovered {len(streams)} streams.", catalog
-            # Connector ran but produced no CATALOG — surface diagnostics
-            stderr = read_from_fileshare(work_id, "stderr.log")
-            debug = read_from_fileshare(work_id, "debug.log")
-            detail = stderr[:500] if stderr else f"empty stderr. debug: {debug[:300]}"
+            connector_err = parse_errors(jsonl)
+            detail = connector_err or "Connector produced no catalog or error output"
             return False, [], f"Discover produced no streams. {detail}", None
 
+        jsonl = read_from_fileshare(work_id, "output.jsonl")
         stderr = read_from_fileshare(work_id, "stderr.log")
-        debug = read_from_fileshare(work_id, "debug.log")
-        detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+        connector_err = parse_errors(jsonl)
+        detail = connector_err or stderr[:500] or "no output"
         return False, [], f"Discover failed: {detail}", None
     finally:
         cleanup_fileshare(work_id)
@@ -559,6 +563,7 @@ def _aca_discover_catalog(
     from ai.agents.onboarding.infra.connector_runner import (
         cleanup_fileshare,
         parse_catalog,
+        parse_errors,
         read_from_fileshare,
         start_connector_execution,
         wait_for_execution,
@@ -586,14 +591,14 @@ def _aca_discover_catalog(
             streams, catalog = parse_catalog(jsonl)
             if catalog:
                 return True, catalog, f"Catalog discovered ({len(streams)} streams)."
-            stderr = read_from_fileshare(work_id, "stderr.log")
-            debug = read_from_fileshare(work_id, "debug.log")
-            detail = stderr[:500] if stderr else f"empty stderr. debug: {debug[:300]}"
+            connector_err = parse_errors(jsonl)
+            detail = connector_err or "Connector produced no catalog or error output"
             return False, None, f"No CATALOG in discover output. {detail}"
 
+        jsonl = read_from_fileshare(work_id, "output.jsonl")
         stderr = read_from_fileshare(work_id, "stderr.log")
-        debug = read_from_fileshare(work_id, "debug.log")
-        detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+        connector_err = parse_errors(jsonl)
+        detail = connector_err or stderr[:500] or "no output"
         return False, None, f"Discover failed: {detail}"
     finally:
         cleanup_fileshare(work_id)
@@ -614,6 +619,7 @@ def _aca_read_probe(
         cleanup_fileshare,
         count_records,
         parse_catalog,
+        parse_errors,
         read_from_fileshare,
         start_connector_execution,
         wait_for_execution,
@@ -631,17 +637,17 @@ def _aca_read_probe(
         # Phase 1: Discover to get the real catalog
         exec1 = start_connector_execution(docker_image, "discover", work_id)
         if not wait_for_execution(exec1, timeout=180):
+            jsonl = read_from_fileshare(work_id, "output.jsonl")
             stderr = read_from_fileshare(work_id, "stderr.log")
-            debug = read_from_fileshare(work_id, "debug.log")
-            detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+            connector_err = parse_errors(jsonl)
+            detail = connector_err or stderr[:500] or "no output"
             return False, 0, f"Discover phase failed: {detail}", ""
 
         jsonl = read_from_fileshare(work_id, "output.jsonl")
         discovered_names, catalog = parse_catalog(jsonl)
         if not catalog:
-            stderr = read_from_fileshare(work_id, "stderr.log")
-            debug = read_from_fileshare(work_id, "debug.log")
-            detail = stderr[:500] if stderr else f"empty stderr. debug: {debug[:300]}"
+            connector_err = parse_errors(jsonl)
+            detail = connector_err or "Connector produced no catalog or error output"
             return False, 0, f"No catalog in discover output. {detail}", ""
 
         # Phase 2: Read with bounded catalog
@@ -657,9 +663,10 @@ def _aca_read_probe(
             extra_args=f"--catalog /data/{work_id}/catalog.json",
         )
         if not wait_for_execution(exec2, timeout=read_timeout):
+            jsonl = read_from_fileshare(work_id, "output.jsonl")
             stderr = read_from_fileshare(work_id, "stderr.log")
-            debug = read_from_fileshare(work_id, "debug.log")
-            detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+            connector_err = parse_errors(jsonl)
+            detail = connector_err or stderr[:500] or "no output"
             return False, 0, f"Read phase failed: {detail}", ""
 
         jsonl = read_from_fileshare(work_id, "output.jsonl")

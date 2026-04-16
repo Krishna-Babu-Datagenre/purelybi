@@ -363,3 +363,43 @@ def count_records(jsonl: str, max_records: int = 0) -> int:
         except json.JSONDecodeError:
             continue
     return count
+
+
+def parse_errors(jsonl: str, max_chars: int = 800) -> str:
+    """Extract error messages from Airbyte JSONL output.
+
+    Connectors emit errors as structured JSON on **stdout** (not stderr) using
+    ``TRACE`` (with ``error``), ``LOG`` (level ``FATAL`` / ``ERROR``), or
+    ``ERROR`` message types.  Returns a combined string or ``""`` if none found.
+    """
+    errors: list[str] = []
+    total = 0
+    for line in jsonl.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+            t = msg.get("type", "")
+
+            text = ""
+            if t == "TRACE":
+                err = (msg.get("trace") or {}).get("error")
+                if err:
+                    text = err.get("message") or err.get("internal_message") or ""
+            elif t == "LOG":
+                log = msg.get("log") or {}
+                if str(log.get("level", "")).upper() in ("FATAL", "ERROR"):
+                    text = log.get("message", "")
+            elif t == "ERROR":
+                text = msg.get("message") or msg.get("error", {}).get("message", "")
+
+            if text:
+                errors.append(text.strip())
+                total += len(errors[-1])
+                if total >= max_chars:
+                    break
+        except json.JSONDecodeError:
+            continue
+
+    return " | ".join(errors)[:max_chars]
