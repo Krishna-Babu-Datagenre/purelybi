@@ -1,21 +1,38 @@
 """Sync Uploader — Slim container for JSONL → Parquet → Blob.
 
 Reads Airbyte JSONL from the mounted File Share, converts RECORD messages
-to Parquet (one file per stream), and uploads to Azure Blob Storage with
-monthly merge.
+to Parquet (one file per stream), and uploads to Azure Blob Storage.
+
+Architecture: streaming single-pass with batch flushing.
+  - JSONL is streamed line-by-line from the File Share (never fully loaded).
+  - Records are buffered per-stream in memory.
+  - When a buffer hits BATCH_SIZE rows, the batch is flushed to a
+    part-file in Blob Storage and the buffer is released.
+  - Airbyte STATE messages are captured inline during the same pass.
+
+Blob path layout:
+    user-data/{user_id}/{source}/{stream}/{sync_ts}_part{N}.parquet
+
+  Each sync produces one or more part-files per stream.  DuckDB reads
+  ``*.parquet`` globs on leaf directories, so all parts are unioned
+  automatically — no merge or download-concat-reupload needed.
+
+  For full_refresh syncs, old part-files are deleted before uploading so
+  stale data doesn't accumulate.  For incremental syncs, parts accumulate
+  and DuckDB unions them.  Deduplication (if needed) happens at query
+  time via the _airbyte_ab_id column.
 
 On completion the uploader writes the sync outcome (success/failed,
 last_airbyte_state, last_sync_at, etc.) directly to Supabase so the UI
 reflects the result immediately — no need to wait for the next
 orchestrator tick.
 
-This replaces the 900-line sync_worker for the Parquet conversion step.
-
 Environment variables (set by the orchestrator via ACA Job image override):
     WORK_ID                         — File Share directory with output.jsonl
     USER_ID                         — Supabase user UUID
     DOCKER_IMAGE                    — e.g. airbyte/source-shopify:3.2.3 (for blob path)
     CONFIG_ID                       — user_connector_configs.id (for status callback)
+    INCREMENTAL_ENABLED             — "true" if incremental sync; else full_refresh
     AZURE_FILE_SHARE_CONN_STR       — File Share connection string
     AZURE_FILE_SHARE_NAME           — File Share name
     AZURE_STORAGE_CONNECTION_STRING  — Blob Storage connection string
@@ -24,9 +41,11 @@ Environment variables (set by the orchestrator via ACA Job image override):
     SUPABASE_SERVICE_ROLE_KEY       — Supabase service-role key (for status callback)
 """
 
+import gc
 import json
 import os
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -41,12 +60,17 @@ WORK_ID = os.environ["WORK_ID"]
 USER_ID = os.environ["USER_ID"]
 DOCKER_IMAGE = os.environ["DOCKER_IMAGE"]
 CONFIG_ID = os.environ.get("CONFIG_ID", "")
+INCREMENTAL = os.environ.get("INCREMENTAL_ENABLED", "").lower() == "true"
 FILESHARE_CONN = os.environ["AZURE_FILE_SHARE_CONN_STR"]
 FILESHARE_NAME = os.environ["AZURE_FILE_SHARE_NAME"]
 BLOB_CONN = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
 BLOB_CONTAINER = os.environ.get("BLOB_CONTAINER_NAME", "raw")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+
+# Flush a stream's buffer to a Parquet part-file once it hits this size.
+# 50 000 rows ≈ 5–30 MB of Parquet depending on schema width.
+BATCH_SIZE = 50_000
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -90,24 +114,27 @@ def read_fileshare_file(path: str) -> bytes:
     return file_client.download_file().readall()
 
 
-def parse_airbyte_jsonl(content: str) -> dict[str, list[dict]]:
-    """Parse Airbyte JSONL and return records grouped by stream name."""
-    streams: dict[str, list[dict]] = {}
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if msg.get("type") == "RECORD":
-            record = msg.get("record", {})
-            stream_name = record.get("stream", "unknown")
-            data = record.get("data", {})
-            if data:
-                streams.setdefault(stream_name, []).append(data)
-    return streams
+def stream_fileshare_lines(path: str):
+    """Yield decoded lines from a File Share file without loading it all.
+
+    Uses chunked download so peak memory is O(chunk_size) rather than
+    O(file_size).  The Azure SDK default chunk is 4 MB.
+    """
+    file_client = ShareFileClient.from_connection_string(
+        conn_str=FILESHARE_CONN,
+        share_name=FILESHARE_NAME,
+        file_path=path,
+    )
+    stream = file_client.download_file()
+    buf = b""
+    for chunk in stream.chunks():
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            yield line.decode("utf-8", errors="replace")
+    # Yield trailing content without newline (last line)
+    if buf:
+        yield buf.decode("utf-8", errors="replace")
 
 
 def cleanup_fileshare() -> None:
@@ -127,20 +154,58 @@ def cleanup_fileshare() -> None:
         print(f"  WARNING: File share cleanup failed (non-fatal): {exc}")
 
 
-def extract_last_airbyte_state(content: str) -> dict | None:
-    """Return the last STATE message from Airbyte JSONL output."""
-    last_state: dict | None = None
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-            if msg.get("type") == "STATE":
-                last_state = msg
-        except json.JSONDecodeError:
-            continue
-    return last_state
+# ── Blob helpers ──────────────────────────────────────────────────────
+
+
+def _blob_prefix_for_stream(source_name: str, stream_name: str) -> str:
+    """Return the blob prefix (folder) for a given stream."""
+    return f"user-data/{USER_ID}/{source_name}/{stream_name}/"
+
+
+def delete_old_parts(container, prefix: str) -> int:
+    """Delete all existing Parquet part-files under a blob prefix.
+
+    Used for full_refresh syncs to prevent stale data accumulation.
+    Returns the number of blobs deleted.
+    """
+    deleted = 0
+    for blob in container.list_blobs(name_starts_with=prefix):
+        if blob.name.endswith(".parquet"):
+            container.delete_blob(blob.name)
+            deleted += 1
+    return deleted
+
+
+def flush_batch(
+    container,
+    records: list[dict],
+    stream_name: str,
+    source_name: str,
+    sync_ts: str,
+    part_num: int,
+) -> str:
+    """Convert a batch of records to Parquet and upload as a part-file.
+
+    Returns the blob path written.
+    """
+    df = pd.DataFrame(records)
+    df = sanitize_df_for_parquet(df)
+
+    prefix = _blob_prefix_for_stream(source_name, stream_name)
+    blob_path = f"{prefix}{sync_ts}_part{part_num}.parquet"
+
+    out = BytesIO()
+    df.to_parquet(out, index=False)
+    out.seek(0)
+
+    container.upload_blob(blob_path, out, overwrite=True)
+    print(f"  {stream_name}: flushed {len(records)} rows → {blob_path}")
+
+    # Explicitly free the DataFrame and buffer
+    del df, out
+    gc.collect()
+
+    return blob_path
 
 
 def _update_supabase(fields: dict) -> bool:
@@ -245,84 +310,120 @@ def _append_error_and_fail(error_detail: str, phase: str = "uploader") -> None:
     })
 
 
-def upload_to_blob(stream_records: dict[str, list[dict]]) -> list[str]:
-    """Convert records to Parquet and upload to Blob Storage with monthly merge."""
-    blob_service = BlobServiceClient.from_connection_string(BLOB_CONN)
-    container = blob_service.get_container_client(BLOB_CONTAINER)
-
-    month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
-    source_name = extract_source_name(DOCKER_IMAGE)
-    uploaded: list[str] = []
-
-    for stream_name, records in stream_records.items():
-        df = pd.DataFrame(records)
-        if df.empty:
-            continue
-
-        df = sanitize_df_for_parquet(df)
-        blob_path = f"user-data/{USER_ID}/{source_name}/{stream_name}/{month_prefix}.parquet"
-        blob_client = container.get_blob_client(blob_path)
-
-        # Merge with existing monthly Parquet if present
-        if blob_client.exists():
-            existing_bytes = blob_client.download_blob().readall()
-            existing_df = pd.read_parquet(BytesIO(existing_bytes))
-            merged = pd.concat([existing_df, df], ignore_index=True)
-            # Deduplicate by _airbyte_ab_id when available (incremental append)
-            if "_airbyte_ab_id" in merged.columns:
-                merged = merged.drop_duplicates(subset=["_airbyte_ab_id"], keep="last")
-            elif "_ab_id" in merged.columns:
-                merged = merged.drop_duplicates(subset=["_ab_id"], keep="last")
-            df = merged
-
-        out = BytesIO()
-        df.to_parquet(out, index=False)
-        out.seek(0)
-        container.upload_blob(blob_path, out, overwrite=True)
-        uploaded.append(blob_path)
-        print(f"  {stream_name}: {len(records)} new rows → {blob_path}")
-
-    return uploaded
-
-
 # ── Main ──────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     print(f"Sync Uploader starting: work_id={WORK_ID} user={USER_ID} image={DOCKER_IMAGE}")
+    print(f"  mode={'incremental' if INCREMENTAL else 'full_refresh'}"
+          f"  batch_size={BATCH_SIZE}")
 
-    # 1. Read JSONL from File Share
     jsonl_path = f"{WORK_ID}/output.jsonl"
-    print(f"[1/3] Reading {jsonl_path} from File Share...")
-    content = read_fileshare_file(jsonl_path).decode("utf-8", errors="replace")
+    source_name = extract_source_name(DOCKER_IMAGE)
+    sync_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
-    # 2. Parse records
-    print("[2/3] Parsing Airbyte JSONL...")
-    stream_records = parse_airbyte_jsonl(content)
-    if not stream_records:
+    blob_service = BlobServiceClient.from_connection_string(BLOB_CONN)
+    container = blob_service.get_container_client(BLOB_CONTAINER)
+
+    # ── Single-pass streaming ─────────────────────────────────────────
+    #
+    # We stream the JSONL line-by-line from the File Share, buffering
+    # RECORD data per-stream.  When any buffer reaches BATCH_SIZE, the
+    # batch is flushed to a Parquet part-file and the buffer is freed.
+    # STATE messages are captured inline so we only traverse the file once.
+
+    print(f"[1/2] Streaming {jsonl_path} → Parquet part-files...")
+
+    stream_buffers: dict[str, list[dict]] = defaultdict(list)
+    stream_part_counts: dict[str, int] = defaultdict(int)
+    last_state: dict | None = None
+    total_records = 0
+    uploaded: list[str] = []
+    streams_seen: set[str] = set()
+
+    # For full_refresh we need to delete old parts, but only once we
+    # know which streams are present in the new data.  We track which
+    # streams have been cleaned so we only delete once per stream.
+    cleaned_streams: set[str] = set()
+
+    for line in stream_fileshare_lines(jsonl_path):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        msg_type = msg.get("type")
+
+        if msg_type == "RECORD":
+            record = msg.get("record", {})
+            stream_name = record.get("stream", "unknown")
+            data = record.get("data", {})
+            if not data:
+                continue
+
+            streams_seen.add(stream_name)
+            stream_buffers[stream_name].append(data)
+            total_records += 1
+
+            # For full_refresh: delete old parts the first time we see
+            # a stream so stale data doesn't accumulate.
+            if not INCREMENTAL and stream_name not in cleaned_streams:
+                prefix = _blob_prefix_for_stream(source_name, stream_name)
+                deleted = delete_old_parts(container, prefix)
+                if deleted:
+                    print(f"  {stream_name}: deleted {deleted} old part-file(s) (full_refresh)")
+                cleaned_streams.add(stream_name)
+
+            # Flush when the buffer hits the batch threshold
+            if len(stream_buffers[stream_name]) >= BATCH_SIZE:
+                part_num = stream_part_counts[stream_name]
+                blob_path = flush_batch(
+                    container,
+                    stream_buffers[stream_name],
+                    stream_name,
+                    source_name,
+                    sync_ts,
+                    part_num,
+                )
+                uploaded.append(blob_path)
+                stream_part_counts[stream_name] += 1
+                stream_buffers[stream_name] = []
+
+        elif msg_type == "STATE":
+            last_state = msg
+
+    # ── Flush remaining buffers ───────────────────────────────────────
+
+    for stream_name, records in stream_buffers.items():
+        if not records:
+            continue
+        part_num = stream_part_counts[stream_name]
+        blob_path = flush_batch(
+            container,
+            records,
+            stream_name,
+            source_name,
+            sync_ts,
+            part_num,
+        )
+        uploaded.append(blob_path)
+
+    # Free buffers
+    del stream_buffers
+    gc.collect()
+
+    # ── Report ────────────────────────────────────────────────────────
+
+    if not uploaded:
         print("WARNING: No RECORD messages in output — nothing to upload")
-        ok = _update_supabase({
-            "last_sync_at": datetime.now(timezone.utc).isoformat(),
-            "last_sync_status": "success",
-            "last_sync_error": None,
-            "aca_execution_name": None,
-            "aca_work_id": None,
-            "consecutive_failures": 0,
-            "sync_error_log": [],  # Clear on success
-        })
-        if ok:
-            cleanup_fileshare()
-        sys.exit(0)
 
-    total = sum(len(r) for r in stream_records.values())
-    print(f"  Found {total} records across {len(stream_records)} stream(s)")
+    print(f"[2/2] Reporting sync result to Supabase...")
+    print(f"  {total_records} rows across {len(streams_seen)} stream(s)"
+          f" → {len(uploaded)} part-file(s)")
 
-    # 3. Upload to Blob
-    print("[3/3] Converting to Parquet and uploading...")
-    uploaded = upload_to_blob(stream_records)
-
-    # 4. Extract Airbyte STATE for incremental sync and report success
-    last_state = extract_last_airbyte_state(content)
     update_fields: dict = {
         "last_sync_at": datetime.now(timezone.utc).isoformat(),
         "last_sync_status": "success",
@@ -330,15 +431,16 @@ def main() -> None:
         "aca_execution_name": None,
         "aca_work_id": None,
         "consecutive_failures": 0,
-        "sync_error_log": [],  # Clear on success
+        "sync_error_log": [],
     }
     if last_state is not None:
         update_fields["last_airbyte_state"] = last_state
+
     ok = _update_supabase(update_fields)
     if ok:
         cleanup_fileshare()
 
-    print(f"\nUpload complete: {len(uploaded)} files uploaded"
+    print(f"\nUpload complete: {len(uploaded)} part-files uploaded"
           f" | state_captured={last_state is not None}")
 
 

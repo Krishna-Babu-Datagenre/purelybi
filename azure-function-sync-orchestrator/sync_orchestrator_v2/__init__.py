@@ -308,6 +308,7 @@ def start_uploader_execution(
     docker_image: str,
     *,
     config_id: str = "",
+    incremental_enabled: bool = False,
     credential: DefaultAzureCredential | None = None,
 ) -> str:
     """Start the sync-uploader image on the ACA Job. Returns execution_name.
@@ -331,6 +332,7 @@ def start_uploader_execution(
         {"name": "BLOB_CONTAINER_NAME", "value": BLOB_CONTAINER},
         {"name": "SUPABASE_URL", "value": SUPABASE_URL},
         {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": SUPABASE_SERVICE_KEY},
+        {"name": "INCREMENTAL_ENABLED", "value": str(incremental_enabled).lower()},
     ]
 
     # Wrap in a shell script to capture stderr to the file share.
@@ -833,6 +835,7 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
                     user_id=config["user_id"],
                     docker_image=config["docker_image"],
                     config_id=config_id,
+                    incremental_enabled=bool(config.get("incremental_enabled", False)),
                     credential=credential,
                 )
                 mark_status(supabase, config_id,
