@@ -60,12 +60,17 @@ def start_connector_execution(
     client = ContainerAppsAPIClient(credential, ACA_SUBSCRIPTION_ID_V2)
 
     shell_script = (
+        f"echo \"EP=$AIRBYTE_ENTRYPOINT\" > /data/{work_id}/debug.log; "
         f"$AIRBYTE_ENTRYPOINT {airbyte_command} "
         f"--config /data/{work_id}/config.json "
         f"{extra_args} "
         f"> /data/{work_id}/output.jsonl "
-        f"2>/data/{work_id}/stderr.log "
-        f"|| true"
+        f"2>/data/{work_id}/stderr.log; "
+        f"RC=$?; "
+        f"echo \"RC=$RC\" >> /data/{work_id}/debug.log; "
+        f"echo \"OUT=$(wc -c < /data/{work_id}/output.jsonl 2>/dev/null)\" >> /data/{work_id}/debug.log; "
+        f"echo \"ERR=$(wc -c < /data/{work_id}/stderr.log 2>/dev/null)\" >> /data/{work_id}/debug.log; "
+        f"exit 0"
     )
 
     container_override = {

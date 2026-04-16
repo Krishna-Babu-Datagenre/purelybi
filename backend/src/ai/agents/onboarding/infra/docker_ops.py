@@ -489,7 +489,9 @@ def _aca_check_connection(docker_image: str, config: dict[str, Any]) -> tuple[bo
             return ok, message or "Connection check succeeded!"
 
         stderr = read_from_fileshare(work_id, "stderr.log")
-        return False, f"Check failed: {stderr[:500]}" if stderr else "Check failed (no output)"
+        debug = read_from_fileshare(work_id, "debug.log")
+        detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+        return False, f"Check failed: {detail}"
     finally:
         cleanup_fileshare(work_id)
 
@@ -534,10 +536,18 @@ def _aca_discover_streams_with_catalog(
         if success:
             jsonl = read_from_fileshare(work_id, "output.jsonl")
             streams, catalog = parse_catalog(jsonl)
-            return True, streams, f"Discovered {len(streams)} streams.", catalog
+            if streams:
+                return True, streams, f"Discovered {len(streams)} streams.", catalog
+            # Connector ran but produced no CATALOG — surface diagnostics
+            stderr = read_from_fileshare(work_id, "stderr.log")
+            debug = read_from_fileshare(work_id, "debug.log")
+            detail = stderr[:500] if stderr else f"empty stderr. debug: {debug[:300]}"
+            return False, [], f"Discover produced no streams. {detail}", None
 
         stderr = read_from_fileshare(work_id, "stderr.log")
-        return False, [], f"Discover failed: {stderr[:500]}" if stderr else "Discover failed", None
+        debug = read_from_fileshare(work_id, "debug.log")
+        detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+        return False, [], f"Discover failed: {detail}", None
     finally:
         cleanup_fileshare(work_id)
 
@@ -577,10 +587,14 @@ def _aca_discover_catalog(
             if catalog:
                 return True, catalog, f"Catalog discovered ({len(streams)} streams)."
             stderr = read_from_fileshare(work_id, "stderr.log")
-            return False, None, f"No CATALOG in discover output. stderr: {stderr[:500]}" if stderr else "No CATALOG message in discover output (empty stderr)."
+            debug = read_from_fileshare(work_id, "debug.log")
+            detail = stderr[:500] if stderr else f"empty stderr. debug: {debug[:300]}"
+            return False, None, f"No CATALOG in discover output. {detail}"
 
         stderr = read_from_fileshare(work_id, "stderr.log")
-        return False, None, f"Discover failed: {stderr[:500]}" if stderr else "Discover failed"
+        debug = read_from_fileshare(work_id, "debug.log")
+        detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+        return False, None, f"Discover failed: {detail}"
     finally:
         cleanup_fileshare(work_id)
 
@@ -618,13 +632,17 @@ def _aca_read_probe(
         exec1 = start_connector_execution(docker_image, "discover", work_id)
         if not wait_for_execution(exec1, timeout=180):
             stderr = read_from_fileshare(work_id, "stderr.log")
-            return False, 0, f"Discover phase failed: {stderr[:500]}", ""
+            debug = read_from_fileshare(work_id, "debug.log")
+            detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+            return False, 0, f"Discover phase failed: {detail}", ""
 
         jsonl = read_from_fileshare(work_id, "output.jsonl")
         discovered_names, catalog = parse_catalog(jsonl)
         if not catalog:
             stderr = read_from_fileshare(work_id, "stderr.log")
-            return False, 0, f"No catalog in discover output. stderr: {stderr[:500]}" if stderr else "No catalog found in discover output (empty stderr)", ""
+            debug = read_from_fileshare(work_id, "debug.log")
+            detail = stderr[:500] if stderr else f"empty stderr. debug: {debug[:300]}"
+            return False, 0, f"No catalog in discover output. {detail}", ""
 
         # Phase 2: Read with bounded catalog
         selected = (stream_names or discovered_names)[:max_streams]
@@ -640,7 +658,9 @@ def _aca_read_probe(
         )
         if not wait_for_execution(exec2, timeout=read_timeout):
             stderr = read_from_fileshare(work_id, "stderr.log")
-            return False, 0, f"Read phase failed: {stderr[:500]}", ""
+            debug = read_from_fileshare(work_id, "debug.log")
+            detail = stderr[:500] if stderr else f"no stderr. debug: {debug[:300]}"
+            return False, 0, f"Read phase failed: {detail}", ""
 
         jsonl = read_from_fileshare(work_id, "output.jsonl")
         record_count = count_records(jsonl, max_records)
