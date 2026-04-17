@@ -19,6 +19,7 @@ from azure.storage.blob import ContainerClient
 logger = logging.getLogger(__name__)
 
 _SAFE_TENANT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_HIVE_SEGMENT_RE = re.compile(r"^[^=]+=.")
 
 
 def _ensure_tls_ca_for_duckdb_azure() -> None:
@@ -155,8 +156,41 @@ def discover_tenant_views(tenant_id: str) -> dict[str, str]:
                 parent_dirs.add(d)
                 break
 
+    # ── Detect Hive-partitioned directory trees ───────────────────
+    # Directories whose path contains segments like "year=2026" or
+    # "month=04" belong to a Hive partition tree.  We find the root
+    # (deepest ancestor *without* a key=value segment) and create a
+    # single view using ``**/*.parquet`` with ``hive_partitioning=true``.
+    hive_roots: set[str] = set()
+    hive_dirs: set[str] = set()
+    for dir_path in all_dirs:
+        parts = dir_path.split("/")
+        for i, part in enumerate(parts):
+            if _HIVE_SEGMENT_RE.match(part):
+                root = "/".join(parts[:i])
+                if root:
+                    hive_roots.add(root)
+                    hive_dirs.add(dir_path)
+                break
+
     views: dict[str, str] = {}
+
+    # Hive root views (one view per root, reads all partitions)
+    for root in sorted(hive_roots):
+        view = _view_name(root)
+        views[view] = f"{base_url}{root}/**/*.parquet"
+
+    # Non-Hive directories (flat layouts, backward-compat)
     for dir_path in sorted(dir_files):
+        if dir_path in hive_dirs:
+            continue
+        # Skip dirs that sit under a Hive root
+        if any(dir_path.startswith(r + "/") for r in hive_roots):
+            continue
+        # Skip dirs that ARE a Hive root (already handled above)
+        if dir_path in hive_roots:
+            continue
+
         files = dir_files[dir_path]
         if dir_path in parent_dirs:
             for filename in sorted(files):
@@ -184,6 +218,9 @@ def create_tenant_sandbox(
     conn = duckdb.connect(":memory:")
     conn.execute("INSTALL azure; LOAD azure;")
     conn.execute("SET threads=2")
+    conn.execute(
+        f"SET memory_limit='{os.environ.get('DUCKDB_MEMORY_LIMIT', '512MB')}'"
+    )
     # libcurl honors CURL_CA_INFO on Linux; default Azure SDK transport often lacks CA path on App Service.
     if sys.platform == "linux":
         conn.execute("SET azure_transport_option_type = 'curl';")
@@ -208,9 +245,10 @@ def create_tenant_sandbox(
 
     for view_name, blob_path in views.items():
         try:
+            hive_opt = ", hive_partitioning=true" if "**/" in blob_path else ""
             conn.execute(
                 f"CREATE OR REPLACE VIEW {view_name} AS "
-                f"SELECT * FROM read_parquet('{blob_path}')"
+                f"SELECT * FROM read_parquet('{blob_path}'{hive_opt})"
             )
         except Exception:
             logger.exception("Failed mounting view %s from %s", view_name, blob_path)

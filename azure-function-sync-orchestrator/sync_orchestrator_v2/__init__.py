@@ -309,6 +309,7 @@ def start_uploader_execution(
     *,
     config_id: str = "",
     incremental_enabled: bool = False,
+    stream_cursor_fields: dict[str, str] | None = None,
     credential: DefaultAzureCredential | None = None,
 ) -> str:
     """Start the sync-uploader image on the ACA Job. Returns execution_name.
@@ -334,6 +335,12 @@ def start_uploader_execution(
         {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": SUPABASE_SERVICE_KEY},
         {"name": "INCREMENTAL_ENABLED", "value": str(incremental_enabled).lower()},
     ]
+
+    if stream_cursor_fields:
+        env_list.append({
+            "name": "STREAM_CURSOR_FIELDS",
+            "value": json.dumps(stream_cursor_fields),
+        })
 
     # Wrap in a shell script to capture stderr to the file share.
     # On OOM kill or segfault the kernel writes nothing, but any Python-level
@@ -580,6 +587,24 @@ def build_configured_catalog(
             "cursor_field": cursor_field,
         })
     return {"streams": streams_out}
+
+
+def extract_cursor_fields(configured_catalog: dict) -> dict[str, str]:
+    """Return ``{stream_name: cursor_field_name}`` for incremental streams.
+
+    Only streams with a non-empty ``cursor_field`` are included.  Nested
+    cursor paths (rare) are joined with ``"."``.
+    """
+    out: dict[str, str] = {}
+    for entry in configured_catalog.get("streams") or []:
+        cf = entry.get("cursor_field") or []
+        if not cf:
+            continue
+        stream_obj = entry.get("stream") or {}
+        name = stream_obj.get("name")
+        if name:
+            out[name] = ".".join(str(p) for p in cf)
+    return out
 
 
 # ── Supabase queries ─────────────────────────────────────────────────
@@ -830,12 +855,25 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
         if status == "succeeded":
             # Start the uploader on the same ACA Job
             try:
+                # Extract per-stream cursor fields from the configured
+                # catalog so the uploader can Hive-partition incremental
+                # data by the actual date in each record.
+                cursor_fields: dict[str, str] | None = None
+                incremental = bool(config.get("incremental_enabled", False))
+                if incremental:
+                    try:
+                        cat_json = read_from_fileshare(work_id, "catalog.json")
+                        cursor_fields = extract_cursor_fields(json.loads(cat_json)) or None
+                    except Exception:
+                        logger.debug("Could not read catalog.json for cursor fields", exc_info=True)
+
                 uploader_exec = start_uploader_execution(
                     work_id=work_id,
                     user_id=config["user_id"],
                     docker_image=config["docker_image"],
                     config_id=config_id,
-                    incremental_enabled=bool(config.get("incremental_enabled", False)),
+                    incremental_enabled=incremental,
+                    stream_cursor_fields=cursor_fields,
                     credential=credential,
                 )
                 mark_status(supabase, config_id,

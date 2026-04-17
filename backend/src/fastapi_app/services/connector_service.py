@@ -51,7 +51,10 @@ _CATALOG_UUID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-_PARQUET_MONTH_RE = re.compile(r"^\d{4}-\d{2}\.parquet$", re.IGNORECASE)
+
+# Matches Hive partition directory segments like "year=2026" or "month=04".
+_HIVE_YEAR_RE = re.compile(r"year=(\d{4})")
+_HIVE_MONTH_RE = re.compile(r"month=(\d{1,2})")
 
 # Cap long strings in preview JSON (keeps payloads bounded).
 _PREVIEW_CELL_MAX_CHARS = 4000
@@ -129,15 +132,16 @@ def preview_raw_stream_table(
     with tempfile.TemporaryDirectory() as td:
         paths: list[str] = []
         month_labels: list[str] = []
-        for m in months:
+        for i, m in enumerate(months):
             month = m["month"]
-            blob_name = f"{blob_prefix}/{stream_name}/{month}.parquet"
+            blob_name = m["blob_name"]
             data = container.download_blob(blob_name).readall()
-            path = os.path.join(td, f"{month}.parquet")
+            path = os.path.join(td, f"{i}_{month}.parquet")
             with open(path, "wb") as fh:
                 fh.write(data)
             paths.append(path.replace("\\", "/"))
-            month_labels.append(month)
+            if month not in month_labels:
+                month_labels.append(month)
 
         # DuckDB reads a list of parquet files as a combined table.
         con = duckdb.connect(database=":memory:")
@@ -259,29 +263,48 @@ def _list_stream_months_in_range(
     start: date,
     end: date,
 ) -> list[dict[str, Any]]:
+    """List parquet files for a stream, filtered by a date range.
+
+    Handles three blob layouts:
+      1. Full-refresh: ``{prefix}/{stream}/part{N}.parquet``  (no date → always included)
+      2. Hive:         ``{prefix}/{stream}/year=YYYY/month=MM/*.parquet``
+
+    Returns a list of dicts with ``blob_name``, ``month`` (``YYYY-MM`` or
+    ``"unpartitioned"``), and ``size_bytes``.
+    """
     wanted = set(_iter_months_in_range(start, end))
     prefix_path = f"{blob_prefix}/{stream}/"
     out: list[dict[str, Any]] = []
     try:
         for blob in container.list_blobs(name_starts_with=prefix_path):
             name = str(blob.name or "")
-            if not name.startswith(prefix_path):
+            if not name.endswith(".parquet"):
                 continue
-            rel = name[len(prefix_path) :]
-            if "/" in rel:
-                continue
-            if not _PARQUET_MONTH_RE.match(rel):
-                continue
-            month = rel[:7]
-            if month not in wanted:
-                continue
+            rel = name[len(prefix_path):]
             sz = getattr(blob, "size", None)
-            out.append(
-                {
+
+            # 1. Hive-partitioned: year=YYYY/month=MM/...
+            ym = _HIVE_YEAR_RE.search(rel)
+            mm = _HIVE_MONTH_RE.search(rel)
+            if ym and mm:
+                month = f"{ym.group(1)}-{int(mm.group(1)):02d}"
+                if month not in wanted:
+                    continue
+                out.append({
                     "month": month,
+                    "blob_name": name,
                     "size_bytes": int(sz) if sz is not None else None,
-                }
-            )
+                })
+                continue
+
+            # 2. Full-refresh part files (no date info) — always include
+            if rel.endswith(".parquet"):
+                out.append({
+                    "month": "unpartitioned",
+                    "blob_name": name,
+                    "size_bytes": int(sz) if sz is not None else None,
+                })
+
     except Exception:
         logger.exception("Failed listing blobs for stream %s", stream)
     out.sort(key=lambda x: x["month"])
@@ -332,11 +355,13 @@ def build_stream_parquet_zip(
     safe_stream = re.sub(r"[^a-zA-Z0-9._-]+", "_", stream_name).strip("_")[:80] or "stream"
     arc_prefix = f"{safe_stream}_{start.isoformat()}_{end.isoformat()}"
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for m in months:
+        for i, m in enumerate(months):
             month = m["month"]
-            blob_name = f"{blob_prefix}/{stream_name}/{month}.parquet"
+            blob_name = m["blob_name"]
             data = container.download_blob(blob_name).readall()
-            zf.writestr(f"{arc_prefix}/{month}.parquet", data)
+            # Use index prefix to avoid name collisions across part files
+            arc_name = blob_name.rsplit("/", 1)[-1]
+            zf.writestr(f"{arc_prefix}/{i:04d}_{arc_name}", data)
     buf.seek(0)
     filename = f"{arc_prefix}.zip"
     return buf.read(), filename
