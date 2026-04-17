@@ -522,25 +522,52 @@ def refresh_credentials_if_needed(
 # ── Airbyte JSONL helpers ─────────────────────────────────────────────
 
 
-def extract_last_airbyte_state(jsonl: str) -> dict[str, Any] | None:
-    """Extract the last Airbyte STATE message from JSONL output.
+def extract_last_airbyte_state(jsonl: str) -> dict[str, Any] | list | None:
+    """Extract Airbyte STATE from JSONL output.
 
-    Connectors emit STATE messages as checkpoints during a read.  The last one
-    represents the cursor position at the end of the sync.  Persisting it and
-    passing it back via ``--state`` on the next run enables incremental sync.
+    For STREAM-type connectors (one STATE message per stream, e.g. Facebook
+    Marketing), all per-stream states are merged so every stream resumes from
+    its own cursor on the next sync.  A list of STATE messages is returned when
+    multiple streams are present; the Airbyte Python CDK accepts both a single
+    message and a list in the ``--state`` file.
+
+    For GLOBAL or LEGACY state types the last message is returned as-is.
     """
-    last_state: dict[str, Any] | None = None
+    # Per-stream states keyed by stream name — last checkpoint per stream wins.
+    stream_states: dict[str, dict] = {}
+    last_non_stream_state: dict[str, Any] | None = None
+
     for line in jsonl.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             msg = json.loads(line)
-            if msg.get("type") == "STATE":
-                last_state = msg
+            if msg.get("type") != "STATE":
+                continue
+            state_payload = msg.get("state", {})
+            if state_payload.get("type") == "STREAM":
+                name = (
+                    state_payload.get("stream", {})
+                    .get("stream_descriptor", {})
+                    .get("name")
+                )
+                if name:
+                    stream_states[name] = msg
+                else:
+                    last_non_stream_state = msg
+            else:
+                # GLOBAL or LEGACY — keep the last one
+                last_non_stream_state = msg
         except json.JSONDecodeError:
             continue
-    return last_state
+
+    if stream_states:
+        states = list(stream_states.values())
+        # Return a plain dict when only one stream to preserve the original
+        # format for single-stream connectors.
+        return states[0] if len(states) == 1 else states
+    return last_non_stream_state
 
 
 # ── Catalog helpers ───────────────────────────────────────────────────
