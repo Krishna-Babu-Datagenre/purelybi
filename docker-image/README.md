@@ -15,16 +15,14 @@ Use this runbook whenever you change `sync_uploader.py`, `credential_refresh.py`
 Run from this folder (`docker-image/`):
 
 ```powershell
-docker build -t sync-uploader:latest -f Dockerfile.uploader .
-docker tag sync-uploader:latest acrpurelybiv2devci.azurecr.io/sync-uploader:latest
-docker push acrpurelybiv2devci.azurecr.io/sync-uploader:latest
+az acr login --name acrpurelybiv2devci
+
+docker build --no-cache -t sync-uploader:v2 -f Dockerfile.uploader .
+docker tag sync-uploader:v2 acrpurelybiv2devci.azurecr.io/sync-uploader:v2
+docker push acrpurelybiv2devci.azurecr.io/sync-uploader:v2
 ```
 
-```
-cd docker-image
-docker build -f Dockerfile.uploader -t acrpurelybiv2devci.azurecr.io/sync-uploader:latest .
-docker push acrpurelybiv2devci.azurecr.io/sync-uploader:latest
-```
+`--no-cache` is always used to ensure the latest code is picked up.
 
 If you are not logged in to ACR yet:
 
@@ -34,7 +32,7 @@ az acr login --name acrpurelybiv2devci
 
 ## 2) The ACA Job pulls the image on next execution
 
-No manual image update needed — the job references `sync-uploader:latest` and pulls on each execution. The `SYNC_UPLOADER_IMAGE` env var in the orchestrator Function App controls which image is used.
+No manual image update needed — the job references `sync-uploader:v2` and pulls on each execution. The `SYNC_UPLOADER_IMAGE` env var in the orchestrator Function App controls which image is used.
 
 ## 3) Quick test flow
 
@@ -59,7 +57,7 @@ No manual image update needed — the job references `sync-uploader:latest` and 
 - `ACA_JOB_CONTAINER_NAME=connector`
 - `AZURE_FILE_SHARE_CONN_STR` (Azure File Share connection string)
 - `AZURE_FILE_SHARE_NAME=connector-data-v2`
-- `SYNC_UPLOADER_IMAGE=acrpurelybiv2devci.azurecr.io/sync-uploader:latest`
+- `SYNC_UPLOADER_IMAGE=acrpurelybiv2devci.azurecr.io/sync-uploader:v2`
 - `AZURE_STORAGE_CONNECTION_STRING` (Blob Storage)
 - `BLOB_CONTAINER_NAME=raw`
 - `SUPABASE_URL`
@@ -88,17 +86,3 @@ Example:
 Monthly behavior:
 - If monthly blob exists: download + append new rows + overwrite
 - If not: create new file
-
-## 5) Recommended tagging (optional but safer)
-
-Using only `latest` works, but version tags make rollbacks easier:
-
-```powershell
-$tag = "2026-04-15-1"
-docker build -t sync-uploader:$tag -f Dockerfile.uploader .
-docker tag sync-uploader:$tag acrpurelybiv2devci.azurecr.io/sync-uploader:$tag
-docker push acrpurelybiv2devci.azurecr.io/sync-uploader:$tag
-```
-```
-
-Then update the job to use that exact tag.

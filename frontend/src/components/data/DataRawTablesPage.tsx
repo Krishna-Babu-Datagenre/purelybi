@@ -709,7 +709,7 @@ const DataRawTablesPage = ({
                                           No data in this date range.
                                         </span>
                                       ) : (
-                                        s.months.map((m) => (
+                                        s.months.filter((m) => m.month !== 'unpartitioned').map((m) => (
                                           <span
                                             key={m.month}
                                             className="inline-flex items-center rounded-md border border-[var(--border-default)] bg-[var(--bg-surface-alt)] px-2 py-0.5 text-[11px] font-mono text-[var(--text-secondary)]"

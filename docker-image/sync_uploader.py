@@ -484,7 +484,11 @@ def main() -> None:
     print(f"[1/2] Streaming {jsonl_path} → Parquet...")
 
     stream_buffers: dict[str, list[dict]] = defaultdict(list)
-    last_state: dict | None = None
+    # Per-stream state accumulator — last checkpoint per stream wins.
+    # Keyed by stream name so multi-stream connectors (e.g. Facebook Marketing)
+    # retain all stream cursors, not just the last STATE message.
+    _stream_states: dict[str, dict] = {}
+    _last_non_stream_state: dict | None = None
     total_records = 0
     uploaded: list[str] = []
     streams_seen: set[str] = set()
@@ -560,7 +564,19 @@ def main() -> None:
                 stream_buffers[stream_name] = []
 
         elif msg_type == "STATE":
-            last_state = msg
+            _state_payload = msg.get("state", {})
+            if _state_payload.get("type") == "STREAM":
+                _name = (
+                    _state_payload.get("stream", {})
+                    .get("stream_descriptor", {})
+                    .get("name")
+                )
+                if _name:
+                    _stream_states[_name] = msg
+                else:
+                    _last_non_stream_state = msg
+            else:
+                _last_non_stream_state = msg
 
     # ── Flush remaining buffers ───────────────────────────────────────
 
@@ -612,6 +628,11 @@ def main() -> None:
         "consecutive_failures": 0,
         "sync_error_log": [],
     }
+    if _stream_states:
+        _states = list(_stream_states.values())
+        last_state: dict | list = _states[0] if len(_states) == 1 else _states
+    else:
+        last_state = _last_non_stream_state
     if last_state is not None:
         update_fields["last_airbyte_state"] = last_state
 

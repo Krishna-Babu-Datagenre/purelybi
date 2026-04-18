@@ -224,12 +224,15 @@ def _discover_stream_names(prefixes: list[str]) -> tuple[list[str], str | None]:
         try:
             for blob in container.list_blobs(name_starts_with=f"{prefix}/"):
                 name = str(blob.name or "")
+                if not name.endswith(".parquet"):
+                    continue
                 rel = name[len(prefix) + 1 :]
                 parts = rel.split("/")
-                if len(parts) != 2:
-                    continue
-                stream_name, month_file = parts
-                if not stream_name or not _PARQUET_MONTH_RE.match(month_file):
+                # First segment is always the stream name regardless of layout:
+                #   full-refresh: {stream}/part{N}.parquet
+                #   hive:         {stream}/year=YYYY/month=MM/{ts}_part{N}.parquet
+                stream_name = parts[0] if parts else ""
+                if not stream_name:
                     continue
                 seen.add(stream_name)
                 matched_prefix = prefix
