@@ -16,7 +16,7 @@ from fastapi_app.services.template_service import (
     get_template_by_id,
     get_template_by_slug,
 )
-from fastapi_app.services.widget_data_service import hydrate_widgets
+from fastapi_app.services.widget_data_service import hydrate_widgets, strip_chart_data
 from fastapi_app.utils.supabase_client import get_supabase_admin_client
 
 logger = logging.getLogger(__name__)
@@ -255,7 +255,6 @@ def build_live_template_dashboard(
         force_refresh=force_refresh,
         filters=filters,
         filters_from_preset=filters_from_preset,
-        persist_cache=False,
     )
     return {
         "id": tmpl["id"],
@@ -364,6 +363,13 @@ def add_widget_to_dashboard(
 
     Returns the created widget row.
     """
+    import copy
+
+    # Strip any query-result data baked into chart_config by the agent.
+    # The widget will be populated by executing the data_config query at
+    # render time via hydrate_widget.
+    chart_config = strip_chart_data(copy.deepcopy(chart_config))
+
     client = get_supabase_admin_client()
 
     # Verify ownership
@@ -629,6 +635,10 @@ def duplicate_dashboard(
     # ── Copy widgets ────────────────────────────────────────────────────
     copied_widgets: list[dict[str, Any]] = []
     for idx, w in enumerate(source_widgets):
+        # Strip stale query data — it will be re-hydrated from data_config.
+        clean_chart = strip_chart_data(
+            dict(w.get("chart_config") or {})
+        )
         widget_row = (
             client.table("widgets")
             .insert(
@@ -637,7 +647,7 @@ def duplicate_dashboard(
                     "title": w.get("title", ""),
                     "type": w.get("type", "chart"),
                     "layout": w.get("layout") or {},
-                    "chart_config": w.get("chart_config") or {},
+                    "chart_config": clean_chart,
                     "data_config": w.get("data_config"),
                     "sort_order": w.get("sort_order", idx),
                 }
@@ -749,15 +759,13 @@ def get_user_dashboard(
         .execute()
     ).data or []
 
-    # Hydrate widgets (uses cache when fresh, queries DB when stale)
+    # Hydrate widgets by executing live DuckDB queries
     hydrated = hydrate_widgets(
         widgets,
         tenant_id=user_id,
         filters=filters,
         filters_from_preset=filters_from_preset,
     )
-    if not filters:
-        _persist_widget_cache(hydrated)
 
     dashboard["widgets"] = hydrated
     return dashboard
@@ -815,8 +823,6 @@ def refresh_dashboard(
         filters=filters,
         filters_from_preset=filters_from_preset,
     )
-    if not filters:
-        _persist_widget_cache(hydrated)
 
     dashboard["widgets"] = hydrated
     return dashboard
@@ -961,31 +967,3 @@ def persist_widget_layouts(
         ).eq("dashboard_id", dashboard_id).execute()
 
     return True
-
-
-# ---------------------------------------------------------------------------
-# Cache persistence
-# ---------------------------------------------------------------------------
-
-
-def _persist_widget_cache(widgets: list[dict[str, Any]]) -> None:
-    """Save data_snapshot for widgets that were freshly hydrated."""
-    dirty = [w for w in widgets if w.pop("_cache_dirty", False)]
-    if not dirty:
-        return
-
-    client = get_supabase_admin_client()
-    for w in dirty:
-        try:
-            client.table("widgets").update(
-                {
-                    "data_snapshot": w["data_snapshot"],
-                    "data_refreshed_at": w["data_refreshed_at"],
-                }
-            ).eq("id", w["id"]).execute()
-        except Exception:
-            logger.warning(
-                "Failed to persist widget cache for widget id=%s",
-                w.get("id"),
-                exc_info=True,
-            )

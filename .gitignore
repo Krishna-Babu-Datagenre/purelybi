@@ -32,3 +32,4 @@ frontend/.cursor/*
 backend/.cursor/*
 AzureCLI.msi
 fb_config.json
+tests/*

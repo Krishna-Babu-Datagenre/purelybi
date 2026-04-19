@@ -46,12 +46,25 @@ Uses the **last** `sql_db_query` result. Prefer a query that returns one row for
 
 Optional: ``prefix`` / ``suffix`` (e.g. currency), ``change_column`` + ``change_label`` on the same row, ``icon`` (`revenue` | `orders` | `aov` | `customers` | `generic`), ``sparkline_value_column`` when the result has multiple ordered rows.
 
+**``date_column``** — Always pass ``date_column`` when the KPI aggregates time-series data (e.g. orders, daily ad spend). Set it to the **source table's** date column used in the ``WHERE`` clause or the natural time dimension (e.g. ``"created_at"`` for orders, ``"date"`` for daily insights). Omit only for truly time-agnostic KPIs (e.g. total product count, number of active campaigns).
+
+Examples:
+- `create_react_kpi(value_column="total_revenue", title="Revenue", prefix="$", date_column="created_at")`
+- `create_react_kpi(value_column="total_comments", title="Comments", date_column="date")`
+
 ## Charts (`create_react_chart`)
 Data comes from the latest `sql_db_query`—pass column names only, not raw rows.
 
 - **bar / line / area / scatter**: `chart_type`, `x`, `y`; optional `title`, `x_label`, `y_label`, `color`.
 - **pie**: `chart_type="pie"`, `names`, `values` (slice labels and values).
 - **Grouped vs stacked bars**: set `color` to a breakdown column; `barmode="group"` (side-by-side) or `barmode="stack"` (stacked).
+
+**``date_column``** — When the source table has a date/timestamp column, **always** pass ``date_column`` so the dashboard date-range filter can apply. This is auto-detected when the `x` column holds date values (e.g. a line chart over time), but you **must** pass it explicitly for charts where `x` is not a date (e.g. bar chart of top-10 items, pie chart by category) but the underlying data is still time-scoped.
+
+Examples:
+- `create_react_chart(chart_type="line", x="order_date", y="revenue", title="Daily Revenue")` — auto-detected, no explicit `date_column` needed
+- `create_react_chart(chart_type="bar", x="title", y="rating", title="Top Movies", date_column="date")` — explicit because `x` is not temporal
+- `create_react_chart(chart_type="pie", names="category", values="count", title="Orders by Category", date_column="created_at")` — explicit for pie
 
 Examples (replace names with columns from your latest query result):
 - `create_react_chart(chart_type="line", x="<time_or_bucket_col>", y="<metric_col>", title="Trend")`

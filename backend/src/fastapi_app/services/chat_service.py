@@ -24,6 +24,7 @@ from ai.agents.sql.duckdb_sandbox import create_tenant_sandbox
 from ai.tools.sql.charts import (
     clear_query_result,
     set_discovered_tables,
+    set_session_conn,
     set_session_context,
 )
 
@@ -378,6 +379,7 @@ async def stream_agent_response(
     set_discovered_tables(
         session_id, entry.get("discovered_tables", frozenset())
     )
+    set_session_conn(session_id, entry.get("conn"))
 
     # Yield "start" immediately so the client receives headers and can show
     # "Agent is thinking" / thought section without waiting for the first agent chunk.

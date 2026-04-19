@@ -3,8 +3,7 @@ Widget data hydration service.
 
 Executes SQL queries defined in each widget's ``data_config`` against the
 user's analytics data in **DuckDB** (views over Parquet in Azure Blob),
-maps the results into the ECharts ``chart_config`` structure, and caches
-the hydrated config in ``data_snapshot`` so subsequent reads are instant.
+and maps the results into the ECharts ``chart_config`` structure.
 
 Follows the same pattern as ``bi_templates/shopify_metaads.py`` but
 works generically for any widget whose ``data_config`` describes a
@@ -28,93 +27,19 @@ logger = logging.getLogger(__name__)
 # Legacy widget SQL was authored for SQLite (e.g. ``DATE(col)``). DuckDB uses ``cast``.
 _LEGACY_DATE_CALL = re.compile(r"\bDATE\s*\(\s*([^)]+?)\s*\)", re.IGNORECASE)
 
-# Widgets with a data_snapshot younger than this are considered fresh.
+# TTL for in-memory preset-filter query cache.
 CACHE_TTL_SECONDS = 300  # 5 minutes
+
+# In-memory TTL cache for unfiltered widget hydration (key: widget id).
+# Populated on first dashboard open; subsequent requests within TTL skip DuckDB.
+_WIDGET_CACHE: dict[str, tuple[dict, datetime]] = {}
+_WIDGET_CACHE_MAX_ENTRIES = 2000
 
 # In-memory cache for preset-filtered widget hydration (key: widget id + preset).
 # Custom date ranges never use this cache.
 _PRESET_FILTER_CACHE: dict[tuple[str, str], tuple[dict[str, Any], datetime]] = {}
 _PRESET_CACHE_MAX_ENTRIES = 4000
 
-# Tables that are allowed in auto-generated KPI SQL (not free-form queries).
-_ALLOWED_TABLES = frozenset(
-    {
-        "shopify_orders",
-        "meta_campaign_insights",
-        "meta_daily_insights",
-        "meta_ad_insights",
-        "meta_adset_insights",
-    }
-)
-
-# Default date column per table (only tables with a time-series axis).
-_DATE_COLUMNS: dict[str, str] = {
-    "shopify_orders": "created_at",
-    "meta_daily_insights": "date",
-}
-
-# Columns that may appear in user-supplied filters, keyed by table.
-_ALLOWED_FILTERS: dict[str, frozenset[str]] = {
-    "shopify_orders": frozenset(
-        {
-            "created_at",
-            "billing_country",
-            "shipping_country",
-            "payment_gateways",
-            "financial_status",
-            "fulfillment_status",
-            "currency",
-            "total_price",
-            "net_sales",
-            "order_margin_base",
-            "cancelled_at",
-        }
-    ),
-    "meta_daily_insights": frozenset(
-        {
-            "date",
-            "spend",
-            "roas",
-        }
-    ),
-    "meta_campaign_insights": frozenset(
-        {
-            "campaign_name",
-            "spend",
-            "roas",
-        }
-    ),
-    "meta_ad_insights": frozenset(
-        {
-            "campaign_name",
-            "ad_name",
-            "spend",
-            "revenue",
-        }
-    ),
-    "meta_adset_insights": frozenset(
-        {
-            "campaign_name",
-            "adset_name",
-            "spend",
-            "revenue",
-        }
-    ),
-}
-
-_FILTER_OPS = frozenset(
-    {
-        "eq",
-        "neq",
-        "in",
-        "not_in",
-        "gt",
-        "gte",
-        "lt",
-        "lte",
-        "between",
-    }
-)
 
 # ---------------------------------------------------------------------------
 # DuckDB helpers
@@ -148,23 +73,6 @@ def _query_db(
     return rows
 
 
-def _is_cache_fresh(widget: dict) -> bool:
-    """Return True when data_snapshot exists and is younger than CACHE_TTL."""
-    refreshed = widget.get("data_refreshed_at")
-    if not refreshed or not widget.get("data_snapshot"):
-        return False
-    try:
-        if isinstance(refreshed, str):
-            dt = datetime.fromisoformat(refreshed.replace("Z", "+00:00"))
-        else:
-            dt = refreshed
-        return (
-            datetime.now(timezone.utc) - dt
-        ).total_seconds() < CACHE_TTL_SECONDS
-    except (ValueError, TypeError):
-        return False
-
-
 def _is_ts_within_ttl(ts: datetime) -> bool:
     try:
         if ts.tzinfo is None:
@@ -174,41 +82,161 @@ def _is_ts_within_ttl(ts: datetime) -> bool:
         return False
 
 
-def _clear_preset_cache_for_widget(widget_id: str) -> None:
+def _clear_widget_cache(widget_id: str) -> None:
+    """Remove all cached entries (unfiltered + preset) for a widget."""
+    _WIDGET_CACHE.pop(widget_id, None)
     keys = [k for k in _PRESET_FILTER_CACHE if k[0] == widget_id]
     for k in keys:
         del _PRESET_FILTER_CACHE[k]
 
 
+# Keep old name as alias so callers that already use it continue to work.
+_clear_preset_cache_for_widget = _clear_widget_cache
+
+
 def _maybe_prune_preset_cache() -> None:
     if len(_PRESET_FILTER_CACHE) > _PRESET_CACHE_MAX_ENTRIES:
         _PRESET_FILTER_CACHE.clear()
+    if len(_WIDGET_CACHE) > _WIDGET_CACHE_MAX_ENTRIES:
+        _WIDGET_CACHE.clear()
+
+
+def strip_chart_data(chart_config: dict) -> dict:
+    """Remove all data arrays / values from a chart_config.
+
+    Returns a structure-only skeleton (series types, axis config, grid,
+    tooltip, etc.) with empty data arrays.  Used both when persisting
+    widgets (so the DB never stores stale query results) and when a
+    hydration query returns no rows or fails.
+    """
+    for s in chart_config.get("series", []):
+        s["data"] = []
+    for axis_key in ("xAxis", "yAxis"):
+        ax = chart_config.get(axis_key)
+        if isinstance(ax, dict) and "data" in ax:
+            ax["data"] = []
+        elif isinstance(ax, list):
+            for ax_item in ax:
+                if isinstance(ax_item, dict) and "data" in ax_item:
+                    ax_item["data"] = []
+    chart_config.pop("value", None)
+    chart_config.pop("sparkline", None)
+    chart_config.pop("change", None)
+    return chart_config
 
 
 # ---------------------------------------------------------------------------
 # Filter helpers
 # ---------------------------------------------------------------------------
 
+# In-process cache for discovered date columns (keyed by table name).
+# Empty string means "probed, no temporal column found".
+_DATE_COLUMN_DISCOVERY_CACHE: dict[str, str] = {}
+
+
+def _discover_date_column(
+    conn: duckdb.DuckDBPyConnection, table: str
+) -> str | None:
+    """Return the best date/timestamp column in *table* via DuckDB introspection.
+
+    Queries ``information_schema.columns`` for any DATE / TIMESTAMP column.
+    Results are cached in-process.  Used only by ``_get_latest_data_date`` to
+    scan all tables in the sandbox — widget-level hydration uses the explicit
+    ``data_config["date_column"]`` instead.
+    """
+    cached = _DATE_COLUMN_DISCOVERY_CACHE.get(table)
+    if cached is not None:
+        return cached or None  # empty string → not found
+
+    try:
+        rows = conn.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = ?",
+            [table],
+        ).fetchall()
+    except Exception:
+        _DATE_COLUMN_DISCOVERY_CACHE[table] = ""
+        return None
+
+    date_cols: list[str] = []
+    for col_name, data_type in rows:
+        upper_type = (data_type or "").upper()
+        if any(t in upper_type for t in ("DATE", "TIMESTAMP")):
+            date_cols.append(col_name)
+
+    if not date_cols:
+        _DATE_COLUMN_DISCOVERY_CACHE[table] = ""
+        return None
+
+    # Prefer conventional names
+    _PREFERRED = (
+        "date", "created_at", "updated_at", "order_date",
+        "timestamp", "datetime", "time",
+    )
+    for pref in _PREFERRED:
+        for col in date_cols:
+            if col.lower() == pref:
+                _DATE_COLUMN_DISCOVERY_CACHE[table] = col
+                return col
+
+    # Substring match (e.g. "order_created_at", "event_date")
+    for hint in ("date", "created", "time"):
+        for col in date_cols:
+            if hint in col.lower():
+                _DATE_COLUMN_DISCOVERY_CACHE[table] = col
+                return col
+
+    # Fall back to the first temporal column
+    _DATE_COLUMN_DISCOVERY_CACHE[table] = date_cols[0]
+    return date_cols[0]
+
+
+def _extract_date_range(filters: list[dict[str, Any]]) -> list[str] | None:
+    """Return ``[start, end]`` from the first ``between`` filter, or None."""
+    for f in filters:
+        if (
+            f.get("op") == "between"
+            and isinstance(f.get("value"), list)
+            and len(f["value"]) == 2
+        ):
+            return f["value"]
+    return None
+
 
 def _get_latest_data_date(conn: duckdb.DuckDBPyConnection):
-    """Return the most recent date found across all time-series tables.
+    """Return the most recent date found across all tables in the sandbox.
 
-    Falls back to ``date.today()`` if the database cannot be queried.
+    Probes every table/view for a temporal column and takes the global
+    MAX.  Falls back to ``date.today()`` if nothing can be queried.
     """
-    _DATE_QUERIES = [
-        "SELECT MAX(created_at) AS max_date FROM shopify_orders",
-        "SELECT MAX(date) AS max_date FROM meta_daily_insights",
-    ]
     latest = None
-    for q in _DATE_QUERIES:
+
+    try:
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main'"
+            ).fetchall()
+        ]
+    except Exception:
+        tables = []
+
+    for table in tables:
+        if not _is_safe_identifier(table):
+            continue
+        date_col = _discover_date_column(conn, table)
+        if not date_col or not _is_safe_identifier(date_col):
+            continue
         try:
-            rows = _query_db(conn, q)
+            rows = _query_db(conn, f"SELECT MAX({date_col}) AS max_date FROM {table}")
             if rows and rows[0].get("max_date"):
                 d = date.fromisoformat(str(rows[0]["max_date"])[:10])
                 if latest is None or d > latest:
                     latest = d
         except Exception:
             pass
+
     return latest or date.today()
 
 
@@ -241,29 +269,23 @@ def build_date_filters_from_params(
     end_date: str | None,
     tenant_id: str | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Build date filter dicts for dashboard hydration.
+    """Build a column-agnostic date-range filter for dashboard hydration.
 
-    Returns ``(filters, preset_cache_key)``. *preset_cache_key* is the preset
-    id (e.g. ``last_7_days``) when the range came from a preset query param;
-    it is ``None`` for explicit ``start_date`` / ``end_date`` (custom range)
-    or when no date filter is requested.
+    Returns ``(filters, preset_cache_key)``.  The filter list contains at
+    most one ``{"op": "between", "value": [start, end]}`` dict — the
+    hydration functions combine it with each widget's
+    ``data_config["date_column"]`` to inject the actual WHERE clause.
 
-    *tenant_id* scopes preset ranges to the latest date in that user's data;
-    if omitted, presets anchor to today's date (degraded behaviour).
+    *preset_cache_key* is the preset id (e.g. ``last_7_days``) when the
+    range came from a preset query param; it is ``None`` for explicit
+    ``start_date`` / ``end_date`` (custom range) or when no date filter
+    is requested.
     """
     if preset:
         start, end = resolve_date_preset(preset, tenant_id=tenant_id)
-        flist = [
-            {"column": col, "op": "between", "value": [start, end]}
-            for col in set(_DATE_COLUMNS.values())
-        ]
-        return flist, preset
+        return [{"op": "between", "value": [start, end]}], preset
     if start_date and end_date:
-        flist = [
-            {"column": col, "op": "between", "value": [start_date, end_date]}
-            for col in set(_DATE_COLUMNS.values())
-        ]
-        return flist, None
+        return [{"op": "between", "value": [start_date, end_date]}], None
     return None, None
 
 
@@ -303,66 +325,6 @@ def resolve_date_preset(
     end = reference + timedelta(days=1)  # exclusive upper bound
     start = reference - timedelta(days=days - 1)
     return start.isoformat(), end.isoformat()
-
-
-def _build_filter_clause(
-    filters: list[dict[str, Any]],
-    table: str,
-) -> tuple[str, list]:
-    """Build ``(clause, params)`` from a list of generic filter dicts.
-
-    Only columns in ``_ALLOWED_FILTERS[table]`` are accepted; unknown
-    columns or operators are silently skipped.  The returned *clause*
-    does **not** include the ``WHERE`` keyword.
-    """
-    allowed = _ALLOWED_FILTERS.get(table, frozenset())
-    parts: list[str] = []
-    params: list[Any] = []
-
-    for f in filters:
-        col = f.get("column", "")
-        op = f.get("op", "")
-        val = f.get("value")
-
-        if col not in allowed or op not in _FILTER_OPS:
-            continue
-        if not _is_safe_identifier(col):
-            continue
-
-        if op == "eq":
-            parts.append(f"{col} = ?")
-            params.append(val)
-        elif op == "neq":
-            parts.append(f"{col} != ?")
-            params.append(val)
-        elif op == "gt":
-            parts.append(f"{col} > ?")
-            params.append(val)
-        elif op == "gte":
-            parts.append(f"{col} >= ?")
-            params.append(val)
-        elif op == "lt":
-            parts.append(f"{col} < ?")
-            params.append(val)
-        elif op == "lte":
-            parts.append(f"{col} <= ?")
-            params.append(val)
-        elif op == "between":
-            if isinstance(val, (list, tuple)) and len(val) == 2:
-                parts.append(f"{col} >= ? AND {col} < ?")
-                params.extend(val)
-        elif op == "in":
-            if isinstance(val, (list, tuple)) and val:
-                placeholders = ", ".join("?" for _ in val)
-                parts.append(f"{col} IN ({placeholders})")
-                params.extend(val)
-        elif op == "not_in":
-            if isinstance(val, (list, tuple)) and val:
-                placeholders = ", ".join("?" for _ in val)
-                parts.append(f"{col} NOT IN ({placeholders})")
-                params.extend(val)
-
-    return (" AND ".join(parts), params) if parts else ("", [])
 
 
 def _inject_where(
@@ -441,7 +403,16 @@ def _execute_kpi_aggregation(
     agg = data_config.get("aggregation", "")
     field = data_config.get("field", "")
 
-    if source not in _ALLOWED_TABLES:
+    if not _is_safe_identifier(source):
+        return None
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+            [source],
+        ).fetchone()
+    except Exception:
+        return None
+    if not exists:
         return None
 
     if agg == "custom":
@@ -460,10 +431,12 @@ def _execute_kpi_aggregation(
 
     params: tuple = ()
     if filters:
-        clause, p = _build_filter_clause(filters, source)
-        if clause:
-            sql += f" WHERE {clause}"
-            params = tuple(p)
+        date_col = data_config.get("date_column", "")
+        if date_col and _is_safe_identifier(date_col):
+            date_range = _extract_date_range(filters)
+            if date_range:
+                sql += f" WHERE {date_col} >= ? AND {date_col} < ?"
+                params = tuple(date_range)
 
     rows = _query_db(conn, sql, params)
     if not rows:
@@ -534,39 +507,15 @@ def _hydrate_kpi_from_query(
 
     params: tuple = ()
     if filters:
-        source = data_config.get("source", "")
-        if source and source in _ALLOWED_FILTERS:
-            clause, p = _build_filter_clause(filters, source)
-            if clause:
-                query, p = _inject_where(query, clause, p)
+        date_col = data_config.get("date_column", "")
+        if date_col and _is_safe_identifier(date_col):
+            date_range = _extract_date_range(filters)
+            if date_range:
+                clause = f"{date_col} >= ? AND {date_col} < ?"
+                query, p = _inject_where(query, clause, list(date_range))
                 params = tuple(p)
-        elif not source and data_config.get("sources"):
-            between_val = next(
-                (
-                    f["value"]
-                    for f in filters
-                    if f.get("op") == "between"
-                    and isinstance(f.get("value"), list)
-                    and len(f["value"]) == 2
-                ),
-                None,
-            )
-            if between_val:
-                query = (
-                    f"SELECT * FROM ({query}) AS _src"
-                    f" WHERE {value_col} IS NOT NULL"
-                )
-                # Wrap and apply generic date filter on the outer query
-                for col_name in set(_DATE_COLUMNS.values()):
-                    if _is_safe_identifier(col_name):
-                        query += f" AND {col_name} >= ? AND {col_name} < ?"
-                        params = params + tuple(between_val)
 
-    try:
-        rows = _query_db(conn, query, params)
-    except Exception:
-        logger.exception("KPI query-based hydration failed")
-        return chart_config
+    rows = _query_db(conn, query, params)
 
     if rows and value_col in rows[0]:
         val = rows[0][value_col]
@@ -625,39 +574,18 @@ def _hydrate_chart(
 
     params: tuple = ()
     if filters:
-        source = data_config.get("source", "")
-        if source and source in _ALLOWED_FILTERS:
-            # Single-source query: inject WHERE directly.
-            clause, p = _build_filter_clause(filters, source)
-            if clause:
-                query, p = _inject_where(query, clause, p)
+        date_col = data_config.get("date_column", "")
+        if date_col and _is_safe_identifier(date_col):
+            date_range = _extract_date_range(filters)
+            if date_range:
+                clause = f"{date_col} >= ? AND {date_col} < ?"
+                query, p = _inject_where(query, clause, list(date_range))
                 params = tuple(p)
-        elif not source and data_config.get("sources"):
-            # Multi-source (JOIN) query: column references may be ambiguous, so
-            # wrap the whole query and filter on the projected xAxis date alias.
-            xaxis_field = data_config.get("mappings", {}).get("xAxis", "")
-            if xaxis_field and _is_safe_identifier(xaxis_field):
-                between_val = next(
-                    (
-                        f["value"]
-                        for f in filters
-                        if f.get("op") == "between"
-                        and isinstance(f.get("value"), list)
-                        and len(f["value"]) == 2
-                    ),
-                    None,
-                )
-                if between_val:
-                    query = (
-                        f"SELECT * FROM ({query}) AS _src"
-                        f" WHERE {xaxis_field} >= ? AND {xaxis_field} < ?"
-                    )
-                    params = tuple(between_val)
 
     logger.debug("_hydrate_chart final query: %s | params: %s", query, params)
     rows = _query_db(conn, query, params)
     if not rows:
-        return chart_config
+        return strip_chart_data(chart_config)
 
     mappings = data_config.get("mappings", {})
     series = chart_config.get("series", [])
@@ -741,9 +669,8 @@ def hydrate_widget(
     force_refresh: bool = False,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
-    persist_cache: bool = True,
 ) -> dict:
-    """Populate a widget's ``chart_config`` with live data.
+    """Populate a widget's ``chart_config`` by executing a live DuckDB query.
 
     *tenant_id* selects the user's Parquet prefix in blob storage. When
     omitted, live queries are skipped and the widget is returned unchanged.
@@ -751,33 +678,33 @@ def hydrate_widget(
     When *conn* is passed (e.g. from :func:`hydrate_widgets`), it is used for
     SQL execution; otherwise a sandbox is opened per call.
 
-    When *force_refresh* is False, no *filters* are active, and a fresh
-    cache exists, the cached ``data_snapshot`` is returned directly.
-
     When *filters* come from a date *preset* (*filters_from_preset* set),
-    results are also served from an in-process TTL cache (same window as
-    ``CACHE_TTL_SECONDS``). Custom date ranges (*filters* without preset)
-    always run a fresh query.
-
-    After a fresh query, ``data_snapshot`` and ``data_refreshed_at`` are
-    set on the widget dict for **unfiltered** loads only, and a
-    ``_cache_dirty`` flag is added so the caller can persist the cache
-    (unless *persist_cache* is False, e.g. for live template views).
+    results are served from an in-process TTL cache keyed by widget id and
+    preset name. Custom date ranges (*filters* without preset) always run a
+    fresh query.
     """
     data_config = widget.get("data_config")
     if not data_config:
+        # No query to execute — ensure chart_config has no stale data.
+        widget["chart_config"] = strip_chart_data(
+            copy.deepcopy(widget.get("chart_config") or {})
+        )
         return widget
 
     wid = widget.get("id")
     wid_str = str(wid) if wid is not None else None
 
     if force_refresh and wid_str:
-        _clear_preset_cache_for_widget(wid_str)
+        _clear_widget_cache(wid_str)
 
-    # ---- cached path (only when no filters are active) ----
-    if not filters and not force_refresh and _is_cache_fresh(widget):
-        widget["chart_config"] = widget["data_snapshot"]
-        return widget
+    # ---- unfiltered: in-memory TTL cache (populated on first dashboard open) ----
+    if not filters and not force_refresh and wid_str:
+        entry = _WIDGET_CACHE.get(wid_str)
+        if entry:
+            cached_chart, ts = entry
+            if _is_ts_within_ttl(ts):
+                widget["chart_config"] = copy.deepcopy(cached_chart)
+                return widget
 
     # ---- preset filter: in-memory TTL cache (not used for custom ranges) ----
     if (
@@ -820,18 +747,18 @@ def hydrate_widget(
                 c.close()
     except Exception:
         logger.exception("Failed to hydrate widget %s", widget.get("id"))
+        # Clear any stale data baked into the Supabase-stored chart_config so the
+        # frontend shows an empty chart rather than phantom data points.
+        widget["chart_config"] = strip_chart_data(chart_config)
         return widget
 
-    now = datetime.now(timezone.utc).isoformat()
     widget["chart_config"] = chart_config
 
-    # Only update the persisted cache for unfiltered queries (user widgets table)
-    if persist_cache and not filters:
-        widget["data_snapshot"] = chart_config
-        widget["data_refreshed_at"] = now
-        widget["_cache_dirty"] = True
-
-    if filters and filters_from_preset and wid_str:
+    # Populate the appropriate cache tier.
+    if not filters and wid_str:
+        _WIDGET_CACHE[wid_str] = (copy.deepcopy(chart_config), datetime.now(timezone.utc))
+        _maybe_prune_preset_cache()
+    elif filters and filters_from_preset and wid_str:
         key = (wid_str, filters_from_preset)
         _PRESET_FILTER_CACHE[key] = (copy.deepcopy(chart_config), datetime.now(timezone.utc))
         _maybe_prune_preset_cache()
@@ -846,7 +773,6 @@ def hydrate_widgets(
     force_refresh: bool = False,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
-    persist_cache: bool = True,
 ) -> list[dict[str, Any]]:
     """Hydrate every widget in a list using one DuckDB connection when *tenant_id* is set."""
     if not tenant_id:
@@ -857,7 +783,6 @@ def hydrate_widgets(
                 force_refresh=force_refresh,
                 filters=filters,
                 filters_from_preset=filters_from_preset,
-                persist_cache=persist_cache,
             )
             for w in widgets
         ]
@@ -871,7 +796,6 @@ def hydrate_widgets(
                 force_refresh=force_refresh,
                 filters=filters,
                 filters_from_preset=filters_from_preset,
-                persist_cache=persist_cache,
             )
             for w in widgets
         ]

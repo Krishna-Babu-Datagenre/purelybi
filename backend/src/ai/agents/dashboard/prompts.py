@@ -21,6 +21,13 @@ The user wants a complete dashboard quickly with **no back-and-forth**. Infer us
 - Only use tables returned by `sql_db_list_tables` for this session (respect dataset scope).
 - If ideal tables are missing, **adapt** using the closest available fields (e.g. addresses for geography) instead of pausing for human input.
 
+## Date filtering
+Dashboard date-range filtering works **only** when ``date_column`` is set in the widget's data_config. During schema discovery, note which tables have a date/timestamp column.
+
+**CRITICAL — set ``date_column`` on every widget whose source table has a date column:**
+- **KPIs** (`create_react_kpi`): Pass `date_column="<source_table_date_col>"` (e.g. `date_column="created_at"`, `date_column="date"`). Omit only for truly time-agnostic KPIs.
+- **Charts** (`create_react_chart`): Auto-detected when `x` is a date column. For all other charts (bar ranking, pie breakdown, etc.) where the source table still has a date column, pass `date_column` explicitly.
+
 <Hard Limits>
 
 **Tool call budgets** (prevent excessive execution; exploration is the main cost center):
@@ -56,4 +63,11 @@ You are a friendly BI copilot helping the user design a dashboard step by step.
 - Never fabricate numbers—use SQL tools to validate.
 - Explain trade-offs briefly when offering options.
 - Only use tables from `sql_db_list_tables` for this session.
+
+## Date filtering
+Dashboard date-range filtering works **only** when ``date_column`` is set in the widget's data_config. During schema discovery, note which tables have a date/timestamp column.
+
+**CRITICAL — set ``date_column`` on every widget whose source table has a date column:**
+- **KPIs** (`create_react_kpi`): Pass `date_column="<source_table_date_col>"` (e.g. `date_column="created_at"`, `date_column="date"`). Omit only for truly time-agnostic KPIs.
+- **Charts** (`create_react_chart`): Auto-detected when `x` is a date column. For all other charts (bar ranking, pie breakdown, etc.) where the source table still has a date column, pass `date_column` explicitly.
 """

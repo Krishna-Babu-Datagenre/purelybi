@@ -8,7 +8,6 @@ from unittest.mock import patch
 import duckdb
 
 from fastapi_app.services.widget_data_service import (
-    _DATE_COLUMNS,
     hydrate_widget,
     resolve_date_preset,
 )
@@ -51,10 +50,7 @@ def _seed_analytics_conn() -> duckdb.DuckDBPyConnection:
 
 def _date_filters() -> list[dict]:
     start, end = resolve_date_preset("last_7_days", tenant_id="test-tenant")
-    return [
-        {"column": col, "op": "between", "value": [start, end]}
-        for col in set(_DATE_COLUMNS.values())
-    ]
+    return [{"op": "between", "value": [start, end]}]
 
 
 @patch(
@@ -79,7 +75,7 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
             },
         }
         out = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=None
         )
         data = out["chart_config"]["series"][0].get("data") or []
         self.assertTrue(len(data) >= 1)
@@ -100,6 +96,7 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
                     "SELECT DATE(created_at) AS dt, COUNT(*) AS order_count "
                     "FROM shopify_orders GROUP BY dt ORDER BY dt"
                 ),
+                "date_column": "dt",
                 "mappings": {
                     "xAxis": "dt",
                     "series": [{"field": "order_count", "name": "Orders"}],
@@ -107,7 +104,7 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
             },
         }
         out = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=None
         )
         xs = out["chart_config"]["xAxis"]["data"]
         ys = out["chart_config"]["series"][0].get("data") or []
@@ -122,12 +119,14 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
                     "source": "shopify_orders",
                     "aggregation": "custom",
                     "formula": "SUM(CASE WHEN financial_status = 'paid' THEN order_margin_base ELSE 0 END)",
+                    "date_column": "created_at",
                 },
                 {
                     "op": "subtract",
                     "source": "meta_daily_insights",
                     "aggregation": "sum",
                     "field": "spend",
+                    "date_column": "date",
                 },
             ]
         }
@@ -139,10 +138,10 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
         }
         f = _date_filters()
         a = hydrate_widget(
-            dict(w0), tenant_id="test-tenant", filters=f, persist_cache=False
+            dict(w0), tenant_id="test-tenant", filters=f
         )["chart_config"]["value"]
         b = hydrate_widget(
-            dict(w0), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w0), tenant_id="test-tenant", filters=None
         )["chart_config"]["value"]
         self.assertIsInstance(a, (int, float))
         self.assertIsInstance(b, (int, float))
@@ -178,13 +177,13 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
                         {"field": "meta_spend", "name": "Meta ad spend"},
                     ],
                 },
+                "date_column": "dt",
             },
         }
         out = hydrate_widget(
             dict(w),
             tenant_id="test-tenant",
             filters=_date_filters(),
-            persist_cache=False,
         )
         xs = out["chart_config"]["xAxis"]["data"]
         self.assertTrue(len(xs) >= 1)
@@ -206,13 +205,13 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
                     "LEFT JOIN meta_daily_insights m ON m.date = days.d ORDER BY dt"
                 ),
                 "mappings": {"xAxis": "dt", "series": [{"field": "roas", "name": "ROAS"}]},
+                "date_column": "dt",
             },
         }
         out = hydrate_widget(
             dict(w),
             tenant_id="test-tenant",
             filters=_date_filters(),
-            persist_cache=False,
         )
         xs = out["chart_config"]["xAxis"]["data"]
         self.assertTrue(len(xs) >= 1)
@@ -226,13 +225,14 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
                 "source": "meta_daily_insights",
                 "aggregation": "sum",
                 "field": "spend",
+                "date_column": "date",
             },
         }
         a = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=_date_filters(), persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=_date_filters()
         )["chart_config"]["value"]
         b = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=None
         )["chart_config"]["value"]
         self.assertNotEqual(a, b, "filtered and unfiltered spend should usually differ")
 
