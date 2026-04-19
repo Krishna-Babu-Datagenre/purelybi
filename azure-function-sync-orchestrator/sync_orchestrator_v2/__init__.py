@@ -281,8 +281,10 @@ def start_connector_execution(
         f"--config /data/{work_id}/config.json "
         f"{extra_args} "
         f"> /data/{work_id}/output.jsonl "
-        f"2>/data/{work_id}/stderr.log "
-        f"|| true"
+        f"2>/data/{work_id}/stderr.log; "
+        f"RC=$?; "
+        f"echo \"RC=$RC\" >> /data/{work_id}/debug.log; "
+        f"exit $RC"
     )
 
     container_override = {
@@ -553,12 +555,12 @@ def extract_last_airbyte_state(jsonl: str) -> dict[str, Any] | list | None:
                     .get("name")
                 )
                 if name:
-                    stream_states[name] = msg
+                    stream_states[name] = state_payload
                 else:
-                    last_non_stream_state = msg
+                    last_non_stream_state = state_payload
             else:
                 # GLOBAL or LEGACY — keep the last one
-                last_non_stream_state = msg
+                last_non_stream_state = state_payload
         except json.JSONDecodeError:
             continue
 
@@ -568,6 +570,26 @@ def extract_last_airbyte_state(jsonl: str) -> dict[str, Any] | list | None:
         # format for single-stream connectors.
         return states[0] if len(states) == 1 else states
     return last_non_stream_state
+
+
+def _normalize_state(state: Any) -> Any:
+    """Strip outer AirbyteMessage envelopes from persisted state.
+
+    Older versions of the orchestrator/uploader stored the full
+    ``{"type": "STATE", "state": {...}}`` envelope instead of the inner
+    ``AirbyteStateMessage``.  The Airbyte CDK expects the inner format.
+
+    This function is idempotent: correctly formatted state passes through
+    unchanged.
+    """
+    def _unwrap(obj: Any) -> Any:
+        if isinstance(obj, dict) and obj.get("type") == "STATE" and "state" in obj:
+            return obj["state"]
+        return obj
+
+    if isinstance(state, list):
+        return [_unwrap(item) for item in state]
+    return _unwrap(state)
 
 
 # ── Catalog helpers ───────────────────────────────────────────────────
@@ -880,6 +902,41 @@ def phase_check_reading(supabase: Client, credential: DefaultAzureCredential) ->
             continue
 
         if status == "succeeded":
+            # Defense in depth: even when ACA reports success, check
+            # output.jsonl for connector-level errors (e.g. bad state
+            # format, auth failures).  Some connectors exit 0 despite
+            # producing only error messages and zero records.
+            connector_errors = ""
+            if work_id:
+                try:
+                    jsonl = read_from_fileshare(work_id, "output.jsonl")
+                    connector_errors = parse_errors_from_jsonl(jsonl)
+                    if connector_errors and not any(
+                        '"type":"RECORD"' in line or '"type": "RECORD"' in line
+                        for line in jsonl.splitlines()
+                    ):
+                        # Fatal: errors present but zero records produced
+                        failures = (config.get("consecutive_failures") or 0) + 1
+                        error_entry = build_detailed_error(
+                            "connector", work_id,
+                            f"Connector exited 0 but produced errors and 0 records",
+                            aca_detail=aca_detail,
+                        )
+                        error_log = append_error_log(supabase, config_id, error_entry, failures)
+                        mark_status(supabase, config_id,
+                                    last_sync_status="failed",
+                                    last_sync_error=f"Connector error (0 records): {connector_errors[:2000]}",
+                                    aca_execution_name=None,
+                                    aca_work_id=None,
+                                    consecutive_failures=failures,
+                                    sync_error_log=error_log)
+                        cleanup_fileshare(work_id)
+                        logger.warning("Connector errors with 0 records: config=%s errors=%s",
+                                       config_id, connector_errors[:200])
+                        continue
+                except Exception:
+                    logger.debug("Could not pre-check output.jsonl for errors", exc_info=True)
+
             # Start the uploader on the same ACA Job
             try:
                 # Extract per-stream cursor fields from the configured
@@ -1029,6 +1086,7 @@ def phase_start_new_syncs(supabase: Client, credential: DefaultAzureCredential) 
             extra_args = f"--catalog /data/{work_id}/catalog.json"
             last_state = config.get("last_airbyte_state")
             if last_state and incremental:
+                last_state = _normalize_state(last_state)
                 write_to_fileshare(work_id, "state.json", json.dumps(last_state, default=str))
                 extra_args += f" --state /data/{work_id}/state.json"
 

@@ -572,11 +572,11 @@ def main() -> None:
                     .get("name")
                 )
                 if _name:
-                    _stream_states[_name] = msg
+                    _stream_states[_name] = _state_payload
                 else:
-                    _last_non_stream_state = msg
+                    _last_non_stream_state = _state_payload
             else:
-                _last_non_stream_state = msg
+                _last_non_stream_state = _state_payload
 
     # ── Flush remaining buffers ───────────────────────────────────────
 
@@ -613,6 +613,41 @@ def main() -> None:
     # ── Report ────────────────────────────────────────────────────────
 
     if not uploaded:
+        # Check if the connector itself failed (e.g. bad state format,
+        # auth errors) by scanning for error messages in the JSONL output.
+        # When the connector crashes, it writes TRACE/ERROR and LOG/FATAL
+        # messages but zero RECORDs.
+        error_hints: list[str] = []
+        for line in stream_fileshare_lines(jsonl_path):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                _m = json.loads(line)
+                _t = _m.get("type", "")
+                if _t == "TRACE":
+                    _err = (_m.get("trace") or {}).get("error")
+                    if _err:
+                        error_hints.append(
+                            _err.get("message") or _err.get("internal_message") or ""
+                        )
+                elif _t == "LOG":
+                    _log = _m.get("log") or {}
+                    if str(_log.get("level", "")).upper() in ("FATAL", "ERROR"):
+                        error_hints.append(_log.get("message", ""))
+            except json.JSONDecodeError:
+                continue
+            if len(error_hints) >= 5:
+                break
+
+        if error_hints:
+            detail = " | ".join(h.strip() for h in error_hints if h)[:4000]
+            print(f"FATAL: Connector produced errors and 0 records:\n  {detail}")
+            _append_error_and_fail(
+                f"Connector error (0 records): {detail}", phase="connector"
+            )
+            sys.exit(1)
+
         print("WARNING: No RECORD messages in output — nothing to upload")
 
     print(f"[2/2] Reporting sync result to Supabase...")
