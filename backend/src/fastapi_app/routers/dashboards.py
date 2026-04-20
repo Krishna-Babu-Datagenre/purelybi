@@ -6,7 +6,7 @@ Endpoints
 POST   /api/dashboards/create                          – create a blank user dashboard
 POST   /api/dashboards                                 – hydrated template by slug (no DB copy)
 GET    /api/dashboards                                 – list dashboards for the authenticated user
-GET    /api/dashboards/{dashboard_id}                  – get a dashboard (optional date filter params)
+GET    /api/dashboards/{dashboard_id}                  – get a dashboard (optional date filter params; hydrate=false returns shell instantly)
 POST   /api/dashboards/{dashboard_id}/duplicate        – duplicate a dashboard (user or template)
 POST   /api/dashboards/{dashboard_id}/widgets          – add a widget to a dashboard
 POST   /api/dashboards/{dashboard_id}/refresh          – force-refresh widget data (optional date params)
@@ -16,10 +16,12 @@ DELETE /api/dashboards/{dashboard_id}/widgets/{widget_id} – delete a widget
 PUT    /api/dashboards/{dashboard_id}/widgets/layouts  – persist widget layout changes
 GET    /api/dashboards/builder/readiness               – AI builder data status + dataset views
 PUT    /api/dashboards/{dashboard_id}/metadata          – update dashboard name/description
+POST   /api/dashboards/prewarm                         – trigger DuckDB sandbox initialisation in background
 """
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -47,6 +49,19 @@ from fastapi_app.services.widget_data_service import (
 from fastapi_app.utils.auth_dep import get_current_user_dep
 
 router = APIRouter(prefix="/api/dashboards", tags=["dashboards"])
+
+
+# ---------------------------------------------------------------------------
+# Background DuckDB pre-warm helper (used by sign-in and the prewarm endpoint)
+# ---------------------------------------------------------------------------
+
+def _prewarm_duckdb(user_id: str) -> None:
+    """Materialise the tenant DuckDB sandbox in a daemon thread (best-effort)."""
+    try:
+        from ai.agents.sql.duckdb_sandbox import get_tenant_sandbox  # noqa: PLC0415
+        get_tenant_sandbox(user_id)
+    except Exception:  # noqa: BLE001
+        pass  # pre-warm failure must never surface to the caller
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +175,7 @@ class DashboardBuilderReadinessResponse(BaseModel):
 
 
 @router.post("/create", status_code=201)
-async def create_blank_dashboard(
+def create_blank_dashboard(
     body: CreateDashboardRequest,
     user: UserProfile = Depends(get_current_user_dep),
 ):
@@ -174,7 +189,7 @@ async def create_blank_dashboard(
 
 
 @router.post("")
-async def open_template_dashboard(
+def open_template_dashboard(
     body: InstantiateDashboardRequest,
     user: UserProfile = Depends(get_current_user_dep),
 ):
@@ -190,7 +205,7 @@ async def open_template_dashboard(
 
 
 @router.get("")
-async def list_dashboards(
+def list_dashboards(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Return all dashboards owned by the authenticated user."""
@@ -198,7 +213,7 @@ async def list_dashboards(
 
 
 @router.get("/data/max-date", response_model=MaxDataDateResponse)
-async def get_max_data_date(
+def get_max_data_date(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Latest calendar date present in the analytics database (dataset boundary)."""
@@ -206,7 +221,7 @@ async def get_max_data_date(
 
 
 @router.get("/builder/readiness", response_model=DashboardBuilderReadinessResponse)
-async def dashboard_builder_readiness(
+def dashboard_builder_readiness(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Data availability and dataset view names for the AI dashboard builder."""
@@ -215,8 +230,25 @@ async def dashboard_builder_readiness(
     )
 
 
+@router.post("/prewarm", status_code=202)
+def prewarm_dashboard(user: UserProfile = Depends(get_current_user_dep)):
+    """Trigger DuckDB sandbox initialisation in the background.
+
+    Returns immediately (HTTP 202) — the tenant's Parquet files start
+    materialising into DuckDB in a daemon thread.  Call this as soon as the
+    user lands on the dashboard list so the sandbox is ready by the time they
+    open a specific dashboard.  Safe to call multiple times; subsequent calls
+    while materialisation is in progress are no-ops (the per-tenant lock in
+    get_tenant_sandbox serialises them).
+    """
+    threading.Thread(
+        target=_prewarm_duckdb, args=(user.id,), daemon=True
+    ).start()
+    return {"status": "warming"}
+
+
 @router.get("/{dashboard_id}")
-async def get_dashboard(
+def get_dashboard(
     dashboard_id: str,
     user: UserProfile = Depends(get_current_user_dep),
     preset: str | None = Query(
@@ -231,11 +263,23 @@ async def get_dashboard(
         None,
         description="End date (ISO format, exclusive)",
     ),
+    hydrate: bool = Query(
+        True,
+        description=(
+            "When false, return the dashboard shell (layout + chart_config from DB) "
+            "immediately without running DuckDB queries. Use this for a fast initial "
+            "render; follow up with hydrate=true (or omit) to get live data."
+        ),
+    ),
 ):
     """Return a single dashboard with all its widgets.
 
     Optional date filtering via *preset* (e.g. ``last_7_days``) or
     explicit *start_date* / *end_date* range.
+
+    Pass ``hydrate=false`` for an instant shell response (< 200 ms) that
+    skips DuckDB queries — useful for progressive loading where the
+    frontend shows the layout first and fetches live data in a second call.
     """
     try:
         filters, filters_from_preset = build_date_filters_from_params(
@@ -246,8 +290,9 @@ async def get_dashboard(
     dashboard = get_user_dashboard(
         user_id=user.id,
         dashboard_id=dashboard_id,
-        filters=filters,
-        filters_from_preset=filters_from_preset,
+        filters=filters if hydrate else None,
+        filters_from_preset=filters_from_preset if hydrate else None,
+        hydrate=hydrate,
     )
     if dashboard is None:
         raise HTTPException(
@@ -258,7 +303,7 @@ async def get_dashboard(
 
 
 @router.put("/{dashboard_id}/metadata")
-async def update_dashboard_metadata(
+def update_dashboard_metadata(
     dashboard_id: str,
     body: UpdateDashboardRequest,
     user: UserProfile = Depends(get_current_user_dep),
@@ -284,7 +329,7 @@ async def update_dashboard_metadata(
 
 
 @router.post("/{dashboard_id}/duplicate", status_code=201)
-async def duplicate_dashboard_endpoint(
+def duplicate_dashboard_endpoint(
     dashboard_id: str,
     body: DuplicateDashboardRequest | None = None,
     user: UserProfile = Depends(get_current_user_dep),
@@ -298,7 +343,7 @@ async def duplicate_dashboard_endpoint(
 
 
 @router.post("/{dashboard_id}/widgets", status_code=201)
-async def add_widget(
+def add_widget(
     dashboard_id: str,
     body: AddWidgetRequest,
     user: UserProfile = Depends(get_current_user_dep),
@@ -319,7 +364,7 @@ async def add_widget(
 
 
 @router.post("/{dashboard_id}/refresh")
-async def refresh_dashboard_data(
+def refresh_dashboard_data(
     dashboard_id: str,
     user: UserProfile = Depends(get_current_user_dep),
     preset: str | None = Query(
@@ -357,7 +402,7 @@ async def refresh_dashboard_data(
 
 
 @router.post("/{dashboard_id}/filtered")
-async def get_filtered_dashboard(
+def get_filtered_dashboard(
     dashboard_id: str,
     body: DashboardFilterRequest,
     user: UserProfile = Depends(get_current_user_dep),
@@ -382,7 +427,7 @@ async def get_filtered_dashboard(
 
 
 @router.delete("/{dashboard_id}", status_code=204)
-async def remove_dashboard(
+def remove_dashboard(
     dashboard_id: str,
     user: UserProfile = Depends(get_current_user_dep),
 ):
@@ -395,7 +440,7 @@ async def remove_dashboard(
 
 
 @router.delete("/{dashboard_id}/widgets/{widget_id}", status_code=204)
-async def remove_widget(
+def remove_widget(
     dashboard_id: str,
     widget_id: str,
     user: UserProfile = Depends(get_current_user_dep),
@@ -411,7 +456,7 @@ async def remove_widget(
 
 
 @router.put("/{dashboard_id}/widgets/layouts", status_code=204)
-async def persist_dashboard_widget_layouts(
+def persist_dashboard_widget_layouts(
     dashboard_id: str,
     body: PersistWidgetLayoutsRequest,
     user: UserProfile = Depends(get_current_user_dep),

@@ -58,6 +58,13 @@ def _date_filters() -> list[dict]:
 
 
 @patch(
+    "fastapi_app.services.widget_data_service.get_tenant_sandbox",
+    side_effect=lambda _tid: (
+        _seed_analytics_conn(),
+        frozenset({"shopify_orders", "meta_daily_insights"}),
+    ),
+)
+@patch(
     "fastapi_app.services.widget_data_service.create_tenant_sandbox",
     side_effect=lambda _tid: (
         _seed_analytics_conn(),
@@ -65,7 +72,7 @@ def _date_filters() -> list[dict]:
     ),
 )
 class TemplateWidgetHydrationTests(unittest.TestCase):
-    def test_payment_method_pie_has_data(self, _mock: object) -> None:
+    def test_payment_method_pie_has_data(self, _mock: object, _mock2: object) -> None:
         w = {
             "id": "t1",
             "type": "pie",
@@ -79,13 +86,13 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
             },
         }
         out = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=None
         )
         data = out["chart_config"]["series"][0].get("data") or []
         self.assertTrue(len(data) >= 1)
         self.assertTrue(all("name" in d and "value" in d for d in data))
 
-    def test_daily_order_count_line_hydrates_axis_and_series(self, _mock: object) -> None:
+    def test_daily_order_count_line_hydrates_axis_and_series(self, _mock: object, _mock2: object) -> None:
         w = {
             "id": "doc1",
             "type": "line",
@@ -107,14 +114,14 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
             },
         }
         out = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=None
         )
         xs = out["chart_config"]["xAxis"]["data"]
         ys = out["chart_config"]["series"][0].get("data") or []
         self.assertTrue(len(xs) >= 1)
         self.assertEqual(len(xs), len(ys))
 
-    def test_net_profit_components_respects_filters(self, _mock: object) -> None:
+    def test_net_profit_components_respects_filters(self, _mock: object, _mock2: object) -> None:
         dc = {
             "components": [
                 {
@@ -139,15 +146,15 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
         }
         f = _date_filters()
         a = hydrate_widget(
-            dict(w0), tenant_id="test-tenant", filters=f, persist_cache=False
+            dict(w0), tenant_id="test-tenant", filters=f
         )["chart_config"]["value"]
         b = hydrate_widget(
-            dict(w0), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w0), tenant_id="test-tenant", filters=None
         )["chart_config"]["value"]
         self.assertIsInstance(a, (int, float))
         self.assertIsInstance(b, (int, float))
 
-    def test_paid_revenue_vs_spend_line_has_points_with_filter(self, _mock: object) -> None:
+    def test_paid_revenue_vs_spend_line_has_points_with_filter(self, _mock: object, _mock2: object) -> None:
         w = {
             "id": "c1",
             "type": "line",
@@ -184,12 +191,11 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
             dict(w),
             tenant_id="test-tenant",
             filters=_date_filters(),
-            persist_cache=False,
         )
         xs = out["chart_config"]["xAxis"]["data"]
         self.assertTrue(len(xs) >= 1)
 
-    def test_daily_roas_line_has_points_with_filter(self, _mock: object) -> None:
+    def test_daily_roas_line_has_points_with_filter(self, _mock: object, _mock2: object) -> None:
         w = {
             "id": "c2",
             "type": "line",
@@ -212,12 +218,11 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
             dict(w),
             tenant_id="test-tenant",
             filters=_date_filters(),
-            persist_cache=False,
         )
         xs = out["chart_config"]["xAxis"]["data"]
         self.assertTrue(len(xs) >= 1)
 
-    def test_total_ad_spend_kpi_meta_daily(self, _mock: object) -> None:
+    def test_total_ad_spend_kpi_meta_daily(self, _mock: object, _mock2: object) -> None:
         w = {
             "id": "k2",
             "type": "kpi",
@@ -229,10 +234,10 @@ class TemplateWidgetHydrationTests(unittest.TestCase):
             },
         }
         a = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=_date_filters(), persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=_date_filters()
         )["chart_config"]["value"]
         b = hydrate_widget(
-            dict(w), tenant_id="test-tenant", filters=None, persist_cache=False
+            dict(w), tenant_id="test-tenant", filters=None
         )["chart_config"]["value"]
         self.assertNotEqual(a, b, "filtered and unfiltered spend should usually differ")
 

@@ -11,10 +11,13 @@ from __future__ import annotations
 import io
 import logging
 import re
+import threading
+import time
 import zipfile
 import math
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from typing import Literal
 from decimal import Decimal
@@ -58,6 +61,43 @@ _HIVE_MONTH_RE = re.compile(r"month=(\d{1,2})")
 
 # Cap long strings in preview JSON (keeps payloads bounded).
 _PREVIEW_CELL_MAX_CHARS = 4000
+
+# ---------------------------------------------------------------------------
+# Blob client singleton + stream name cache
+# ---------------------------------------------------------------------------
+_blob_container_client: Any = None
+_blob_container_lock = threading.Lock()
+
+_STREAM_CACHE: dict[str, tuple[list[str], str | None, float]] = {}
+_STREAM_CACHE_TTL = 300.0  # 5 min
+
+
+def _get_blob_container() -> Any:
+    """Lazily-created module-level ContainerClient (avoids per-request overhead)."""
+    global _blob_container_client
+    if _blob_container_client is not None:
+        return _blob_container_client
+    if not AZURE_STORAGE_CONNECTION_STRING:
+        return None
+    with _blob_container_lock:
+        if _blob_container_client is not None:
+            return _blob_container_client
+        try:
+            service = BlobServiceClient.from_connection_string(
+                AZURE_STORAGE_CONNECTION_STRING
+            )
+            _blob_container_client = service.get_container_client(
+                AZURE_STORAGE_CONTAINER
+            )
+        except Exception:
+            logger.exception("Could not initialize Azure Blob client singleton")
+            return None
+        return _blob_container_client
+
+
+def invalidate_stream_cache() -> None:
+    """Clear cached stream names (call after sync completes)."""
+    _STREAM_CACHE.clear()
 
 
 def _preview_json_cell(value: Any) -> Any:
@@ -109,11 +149,8 @@ def preview_raw_stream_table(
         return None
     if not AZURE_STORAGE_CONNECTION_STRING:
         return None
-    try:
-        service = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
-        container = service.get_container_client(AZURE_STORAGE_CONTAINER)
-    except Exception:
-        logger.exception("Could not initialize Azure Blob client for preview")
+    container = _get_blob_container()
+    if container is None:
         return None
 
     months = _list_stream_months_in_range(
@@ -207,15 +244,16 @@ def _candidate_prefixes(user_id: str, connector_folder: str) -> list[str]:
 
 
 def _discover_stream_names(prefixes: list[str]) -> tuple[list[str], str | None]:
-    if not AZURE_STORAGE_CONNECTION_STRING:
-        return [], None
-    try:
-        service = BlobServiceClient.from_connection_string(
-            AZURE_STORAGE_CONNECTION_STRING
-        )
-        container = service.get_container_client(AZURE_STORAGE_CONTAINER)
-    except Exception:
-        logger.exception("Could not initialize Azure Blob client for synced tables")
+    cache_key = prefixes[0] if prefixes else ""
+    if cache_key:
+        cached = _STREAM_CACHE.get(cache_key)
+        if cached is not None:
+            streams, matched, ts = cached
+            if time.monotonic() - ts < _STREAM_CACHE_TTL:
+                return list(streams), matched
+
+    container = _get_blob_container()
+    if container is None:
         return [], None
 
     seen: set[str] = set()
@@ -228,9 +266,6 @@ def _discover_stream_names(prefixes: list[str]) -> tuple[list[str], str | None]:
                     continue
                 rel = name[len(prefix) + 1 :]
                 parts = rel.split("/")
-                # First segment is always the stream name regardless of layout:
-                #   full-refresh: {stream}/part{N}.parquet
-                #   hive:         {stream}/year=YYYY/month=MM/{ts}_part{N}.parquet
                 stream_name = parts[0] if parts else ""
                 if not stream_name:
                     continue
@@ -242,7 +277,10 @@ def _discover_stream_names(prefixes: list[str]) -> tuple[list[str], str | None]:
                 prefix,
                 AZURE_STORAGE_CONTAINER,
             )
-    return sorted(seen), matched_prefix
+    result = sorted(seen)
+    if cache_key:
+        _STREAM_CACHE[cache_key] = (result, matched_prefix, time.monotonic())
+    return result, matched_prefix
 
 
 def _iter_months_in_range(start: date, end: date) -> list[str]:
@@ -341,11 +379,8 @@ def build_stream_parquet_zip(
         return None
     if not AZURE_STORAGE_CONNECTION_STRING:
         return None
-    try:
-        service = BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
-        container = service.get_container_client(AZURE_STORAGE_CONTAINER)
-    except Exception:
-        logger.exception("Could not initialize Azure Blob client for download")
+    container = _get_blob_container()
+    if container is None:
         return None
 
     months = _list_stream_months_in_range(
@@ -594,54 +629,82 @@ def delete_user_connector(user_id: str, config_id: str) -> bool:
     return bool(res.data)
 
 
+def _build_connector_metadata_entry(
+    r: dict[str, Any],
+    user_id: str,
+    want_inventory: bool,
+    start_date: date | None,
+    end_date: date | None,
+    container: Any,
+) -> dict[str, Any]:
+    """Build the metadata dict for a single connector row (designed for thread-pool use)."""
+    connector_folder = _extract_connector_folder(r)
+    prefixes = _candidate_prefixes(user_id, connector_folder)
+    discovered, matched_prefix = _discover_stream_names(prefixes)
+    selected = r.get("selected_streams") or []
+    synced_tables = discovered or [s for s in selected if isinstance(s, str)]
+    prefix = matched_prefix or prefixes[0]
+    entry: dict[str, Any] = {
+        "connector_config_id": r["id"],
+        "docker_repository": r.get("docker_repository", ""),
+        "connector_name": r.get("connector_name", ""),
+        "last_sync_at": r.get("last_sync_at"),
+        "last_sync_status": r.get("last_sync_status", "pending"),
+        "last_sync_error": r.get("last_sync_error"),
+        "data_prefix_hint": f"{AZURE_STORAGE_CONTAINER}/{prefix}",
+        "synced_tables": synced_tables,
+    }
+    if want_inventory and start_date and end_date:
+        inv: list[dict[str, Any]] = []
+        if container is not None:
+            for stream in synced_tables:
+                months = _list_stream_months_in_range(
+                    container, prefix, stream, start_date, end_date
+                )
+                inv.append({"stream": stream, "months": months})
+        else:
+            inv = [{"stream": s, "months": []} for s in synced_tables]
+        entry["stream_inventory"] = inv
+    return entry
+
+
 def list_synced_tables_metadata(
     user_id: str,
     *,
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> list[dict[str, Any]]:
-    """Derive sync metadata for View-raw-tables from connector rows + blob paths."""
-    rows = list_user_connectors(user_id)
-    out: list[dict[str, Any]] = []
-    want_inventory = start_date is not None and end_date is not None
-    container = None
-    if want_inventory and AZURE_STORAGE_CONNECTION_STRING:
-        try:
-            service = BlobServiceClient.from_connection_string(
-                AZURE_STORAGE_CONNECTION_STRING
-            )
-            container = service.get_container_client(AZURE_STORAGE_CONTAINER)
-        except Exception:
-            logger.exception("Could not initialize Azure Blob for stream inventory")
-            container = None
+    """Derive sync metadata for View-raw-tables from connector rows + blob paths.
 
-    for r in rows:
-        connector_folder = _extract_connector_folder(r)
-        prefixes = _candidate_prefixes(user_id, connector_folder)
-        discovered, matched_prefix = _discover_stream_names(prefixes)
-        selected = r.get("selected_streams") or []
-        synced_tables = discovered or [s for s in selected if isinstance(s, str)]
-        prefix = matched_prefix or prefixes[0]
-        entry: dict[str, Any] = {
-            "connector_config_id": r["id"],
-            "docker_repository": r.get("docker_repository", ""),
-            "connector_name": r.get("connector_name", ""),
-            "last_sync_at": r.get("last_sync_at"),
-            "last_sync_status": r.get("last_sync_status", "pending"),
-            "last_sync_error": r.get("last_sync_error"),
-            "data_prefix_hint": f"{AZURE_STORAGE_CONTAINER}/{prefix}",
-            "synced_tables": synced_tables,
+    Each connector's blob discovery runs in a thread-pool so that multiple
+    connectors do not serialize their Azure Blob list() round-trips.
+    """
+    rows = list_user_connectors(user_id)
+    if not rows:
+        return []
+
+    want_inventory = start_date is not None and end_date is not None
+    container = _get_blob_container() if want_inventory else None
+
+    # Fan out one task per connector; preserve original ordering via submitted
+    # order rather than as_completed so the UI list is stable.
+    max_workers = min(len(rows), 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _build_connector_metadata_entry,
+                r, user_id, want_inventory, start_date, end_date, container,
+            ): idx
+            for idx, r in enumerate(rows)
         }
-        if want_inventory and start_date and end_date:
-            inv: list[dict[str, Any]] = []
-            if container is not None:
-                for stream in synced_tables:
-                    months = _list_stream_months_in_range(
-                        container, prefix, stream, start_date, end_date
-                    )
-                    inv.append({"stream": stream, "months": months})
-            else:
-                inv = [{"stream": s, "months": []} for s in synced_tables]
-            entry["stream_inventory"] = inv
-        out.append(entry)
-    return out
+        results: list[dict[str, Any]] = [{}] * len(rows)
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            try:
+                results[idx] = fut.result()
+            except Exception:
+                logger.exception(
+                    "Failed building metadata for connector row idx=%d", idx
+                )
+    # Filter out any empty placeholders from failures
+    return [r for r in results if r]

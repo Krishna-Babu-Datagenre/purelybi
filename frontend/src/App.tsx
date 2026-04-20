@@ -6,7 +6,7 @@ import Topbar from './components/Topbar';
 import ChatDrawer from './components/ChatDrawer';
 import LoginPage from './components/LoginPage';
 import DateFilterBar from './components/DateFilterBar';
-import LatestDataLabel from './components/LatestDataLabel';
+
 import DataConnectPage from './components/data/DataConnectPage';
 import DataManagePage from './components/data/DataManagePage';
 import DataRawTablesPage from './components/data/DataRawTablesPage';
@@ -194,9 +194,6 @@ const App = () => {
                       flexShrink: 0,
                     }}
                   >
-                    <div className="min-w-0 justify-self-start">
-                      <LatestDataLabel />
-                    </div>
                     <div className="min-w-0 justify-self-end">
                       <DateFilterBar />
                     </div>

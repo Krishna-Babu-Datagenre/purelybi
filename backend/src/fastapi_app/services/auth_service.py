@@ -8,6 +8,7 @@ avatar, role) — never passwords.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from supabase_auth.errors import AuthApiError
 
@@ -17,6 +18,14 @@ from fastapi_app.utils.supabase_client import (
     get_supabase_admin_client,
     get_supabase_client,
 )
+
+# ---------------------------------------------------------------------------
+# In-process profile cache — profile data (name, avatar, role) is stable and
+# doesn't need a Supabase round-trip on every authenticated request.
+# Cache entries expire after 60 seconds.
+# ---------------------------------------------------------------------------
+_PROFILE_CACHE_TTL_SECONDS = 60
+_profile_cache: dict[str, tuple[dict, datetime]] = {}
 
 
 class EmailConfirmationRequired(Exception):
@@ -247,6 +256,18 @@ def get_current_user(access_token: str) -> UserProfile:
         )
 
     user = res.user
+    user_id = str(user.id)
+
+    # Check in-process profile cache to avoid a Supabase round-trip on every request.
+    now = datetime.now(timezone.utc)
+    cached = _profile_cache.get(user_id)
+    if cached is not None:
+        profile_row, cached_at = cached
+        if (now - cached_at).total_seconds() < _PROFILE_CACHE_TTL_SECONDS:
+            return _build_user_profile(
+                user=user.__dict__ if hasattr(user, "__dict__") else dict(user),
+                profile_row=profile_row,
+            )
 
     # Use the admin client for the profile query because the anon client
     # has no active session here (get_user doesn't set one) and RLS would
@@ -255,11 +276,13 @@ def get_current_user(access_token: str) -> UserProfile:
     profile_rows = (
         admin.table("profiles")
         .select("full_name, avatar_url, role")
-        .eq("id", user.id)
+        .eq("id", user_id)
         .limit(1)
         .execute()
     ).data
     profile_row = profile_rows[0] if profile_rows else None
+
+    _profile_cache[user_id] = (profile_row or {}, now)
 
     return _build_user_profile(
         user=user.__dict__ if hasattr(user, "__dict__") else dict(user),

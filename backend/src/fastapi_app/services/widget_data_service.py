@@ -3,12 +3,10 @@ Widget data hydration service.
 
 Executes SQL queries defined in each widget's ``data_config`` against the
 user's analytics data in **DuckDB** (views over Parquet in Azure Blob),
-maps the results into the ECharts ``chart_config`` structure, and caches
-the hydrated config in ``data_snapshot`` so subsequent reads are instant.
+and maps the results into the ECharts ``chart_config`` structure.
 
-Follows the same pattern as ``bi_templates/shopify_metaads.py`` but
-works generically for any widget whose ``data_config`` describes a
-query + mappings.
+Widget results are cached purely in process (``_PRESET_FILTER_CACHE``) for
+preset date ranges; no widget data is stored in Supabase.
 """
 
 from __future__ import annotations
@@ -16,19 +14,20 @@ from __future__ import annotations
 import copy
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from typing import Any
 
 import duckdb
 
-from ai.agents.sql.duckdb_sandbox import create_tenant_sandbox
+from ai.agents.sql.duckdb_sandbox import create_tenant_sandbox, get_tenant_sandbox
 
 logger = logging.getLogger(__name__)
 
 # Legacy widget SQL was authored for SQLite (e.g. ``DATE(col)``). DuckDB uses ``cast``.
 _LEGACY_DATE_CALL = re.compile(r"\bDATE\s*\(\s*([^)]+?)\s*\)", re.IGNORECASE)
 
-# Widgets with a data_snapshot younger than this are considered fresh.
+# TTL for in-process preset-filter cache (preset key → chart_config dict).
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # In-memory cache for preset-filtered widget hydration (key: widget id + preset).
@@ -148,23 +147,6 @@ def _query_db(
     return rows
 
 
-def _is_cache_fresh(widget: dict) -> bool:
-    """Return True when data_snapshot exists and is younger than CACHE_TTL."""
-    refreshed = widget.get("data_refreshed_at")
-    if not refreshed or not widget.get("data_snapshot"):
-        return False
-    try:
-        if isinstance(refreshed, str):
-            dt = datetime.fromisoformat(refreshed.replace("Z", "+00:00"))
-        else:
-            dt = refreshed
-        return (
-            datetime.now(timezone.utc) - dt
-        ).total_seconds() < CACHE_TTL_SECONDS
-    except (ValueError, TypeError):
-        return False
-
-
 def _is_ts_within_ttl(ts: datetime) -> bool:
     try:
         if ts.tzinfo is None:
@@ -226,11 +208,8 @@ def get_max_data_date_iso(tenant_id: str) -> str:
         age = (now - cached_at).total_seconds()
         if age >= 0 and age < _MAX_DATA_DATE_CACHE_TTL_SECONDS:
             return value
-    conn, _ = create_tenant_sandbox(tenant_id)
-    try:
-        iso = _get_latest_data_date(conn).isoformat()
-    finally:
-        conn.close()
+    conn, _ = get_tenant_sandbox(tenant_id)
+    iso = _get_latest_data_date(conn).isoformat()
     _MAX_DATA_DATE_ISO_CACHE[tenant_id] = (iso, now)
     return iso
 
@@ -293,11 +272,7 @@ def resolve_date_preset(
     if days is None:
         raise ValueError(f"Unknown date preset: {preset!r}")
     if tenant_id:
-        conn, _ = create_tenant_sandbox(tenant_id)
-        try:
-            reference = _get_latest_data_date(conn)
-        finally:
-            conn.close()
+        reference = date.fromisoformat(get_max_data_date_iso(tenant_id))
     else:
         reference = date.today()
     end = reference + timedelta(days=1)  # exclusive upper bound
@@ -741,7 +716,6 @@ def hydrate_widget(
     force_refresh: bool = False,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
-    persist_cache: bool = True,
 ) -> dict:
     """Populate a widget's ``chart_config`` with live data.
 
@@ -751,18 +725,9 @@ def hydrate_widget(
     When *conn* is passed (e.g. from :func:`hydrate_widgets`), it is used for
     SQL execution; otherwise a sandbox is opened per call.
 
-    When *force_refresh* is False, no *filters* are active, and a fresh
-    cache exists, the cached ``data_snapshot`` is returned directly.
-
     When *filters* come from a date *preset* (*filters_from_preset* set),
-    results are also served from an in-process TTL cache (same window as
-    ``CACHE_TTL_SECONDS``). Custom date ranges (*filters* without preset)
+    results are served from an in-process TTL cache. Custom date ranges
     always run a fresh query.
-
-    After a fresh query, ``data_snapshot`` and ``data_refreshed_at`` are
-    set on the widget dict for **unfiltered** loads only, and a
-    ``_cache_dirty`` flag is added so the caller can persist the cache
-    (unless *persist_cache* is False, e.g. for live template views).
     """
     data_config = widget.get("data_config")
     if not data_config:
@@ -774,18 +739,8 @@ def hydrate_widget(
     if force_refresh and wid_str:
         _clear_preset_cache_for_widget(wid_str)
 
-    # ---- cached path (only when no filters are active) ----
-    if not filters and not force_refresh and _is_cache_fresh(widget):
-        widget["chart_config"] = widget["data_snapshot"]
-        return widget
-
     # ---- preset filter: in-memory TTL cache (not used for custom ranges) ----
-    if (
-        filters
-        and filters_from_preset
-        and wid_str
-        and not force_refresh
-    ):
+    if filters and filters_from_preset and wid_str and not force_refresh:
         key = (wid_str, filters_from_preset)
         entry = _PRESET_FILTER_CACHE.get(key)
         if entry:
@@ -813,23 +768,13 @@ def hydrate_widget(
         if conn is not None:
             chart_config = _run(conn)
         else:
-            c, _ = create_tenant_sandbox(tenant_id)
-            try:
-                chart_config = _run(c)
-            finally:
-                c.close()
+            c, _ = get_tenant_sandbox(tenant_id)
+            chart_config = _run(c)
     except Exception:
         logger.exception("Failed to hydrate widget %s", widget.get("id"))
         return widget
 
-    now = datetime.now(timezone.utc).isoformat()
     widget["chart_config"] = chart_config
-
-    # Only update the persisted cache for unfiltered queries (user widgets table)
-    if persist_cache and not filters:
-        widget["data_snapshot"] = chart_config
-        widget["data_refreshed_at"] = now
-        widget["_cache_dirty"] = True
 
     if filters and filters_from_preset and wid_str:
         key = (wid_str, filters_from_preset)
@@ -846,9 +791,14 @@ def hydrate_widgets(
     force_refresh: bool = False,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
-    persist_cache: bool = True,
 ) -> list[dict[str, Any]]:
-    """Hydrate every widget in a list using one DuckDB connection when *tenant_id* is set."""
+    """Hydrate every widget in a list using one DuckDB connection when *tenant_id* is set.
+
+    Each widget is hydrated on its own DuckDB cursor (new connection to the same
+    in-memory database) inside a thread-pool so independent SQL queries run
+    concurrently — DuckDB 1.x supports parallel reads across connections to the
+    same database. A single widget falls back to the simple serial path.
+    """
     if not tenant_id:
         return [
             hydrate_widget(
@@ -857,12 +807,14 @@ def hydrate_widgets(
                 force_refresh=force_refresh,
                 filters=filters,
                 filters_from_preset=filters_from_preset,
-                persist_cache=persist_cache,
             )
             for w in widgets
         ]
-    conn, _ = create_tenant_sandbox(tenant_id)
-    try:
+
+    conn, _ = get_tenant_sandbox(tenant_id)
+
+    if len(widgets) <= 1:
+        # Serial path for a single widget — no threading overhead.
         return [
             hydrate_widget(
                 w,
@@ -871,9 +823,33 @@ def hydrate_widgets(
                 force_refresh=force_refresh,
                 filters=filters,
                 filters_from_preset=filters_from_preset,
-                persist_cache=persist_cache,
             )
             for w in widgets
         ]
-    finally:
-        conn.close()
+
+    # Parallel path: each widget gets its own cursor (independent DuckDB connection
+    # to the same in-memory database) so queries don't serialise.
+    def _hydrate_one(w: dict[str, Any]) -> dict[str, Any]:
+        cursor = conn.cursor()  # new connection, same DB — thread-safe read
+        return hydrate_widget(
+            w,
+            tenant_id=tenant_id,
+            conn=cursor,
+            force_refresh=force_refresh,
+            filters=filters,
+            filters_from_preset=filters_from_preset,
+        )
+
+    max_workers = min(len(widgets), 8)
+    # Preserve original widget order — use index-keyed futures.
+    results: list[dict[str, Any]] = [{}] * len(widgets)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_hydrate_one, w): i for i, w in enumerate(widgets)}
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            try:
+                results[idx] = fut.result()
+            except Exception:
+                logger.exception("Failed to hydrate widget at index %d", idx)
+                results[idx] = widgets[idx]  # return widget unchanged on failure
+    return results

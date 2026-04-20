@@ -80,7 +80,7 @@ async def get_connector_catalog_row(
 
 
 @router.get("/synced-tables", response_model=list[SyncedTableInfo])
-async def list_synced_tables(
+def list_synced_tables(
     user: UserProfile = Depends(get_current_user_dep),
     start_date: date | None = Query(
         None,
@@ -108,7 +108,7 @@ async def list_synced_tables(
 
 
 @router.get("/{config_id}/streams/{stream_name:path}/download")
-async def download_raw_stream_zip(
+def download_raw_stream_zip(
     config_id: str,
     stream_name: str,
     user: UserProfile = Depends(get_current_user_dep),
@@ -142,7 +142,7 @@ async def download_raw_stream_zip(
 
 
 @router.get("/{config_id}/streams/{stream_name:path}/preview", response_model=RawTablePreview)
-async def preview_raw_stream(
+def preview_raw_stream(
     config_id: str,
     stream_name: str,
     user: UserProfile = Depends(get_current_user_dep),
@@ -175,7 +175,7 @@ async def preview_raw_stream(
 
 
 @router.get("", response_model=list[UserConnectorConfig])
-async def list_my_connectors(
+def list_my_connectors(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """List the current user’s saved connector configurations (Manage UI)."""
@@ -183,7 +183,7 @@ async def list_my_connectors(
 
 
 @router.post("", response_model=UserConnectorConfig, status_code=status.HTTP_201_CREATED)
-async def create_my_connector(
+def create_my_connector(
     body: UserConnectorConfigCreate,
     user: UserProfile = Depends(get_current_user_dep),
 ):
@@ -192,7 +192,7 @@ async def create_my_connector(
 
 
 @router.get("/{config_id}", response_model=UserConnectorConfig)
-async def get_my_connector(
+def get_my_connector(
     config_id: str,
     user: UserProfile = Depends(get_current_user_dep),
 ):
@@ -206,7 +206,7 @@ async def get_my_connector(
 
 
 @router.patch("/{config_id}", response_model=UserConnectorConfig)
-async def update_my_connector(
+def update_my_connector(
     config_id: str,
     body: UserConnectorConfigUpdate,
     user: UserProfile = Depends(get_current_user_dep),
@@ -218,7 +218,7 @@ async def update_my_connector(
 
 
 @router.delete("/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_my_connector(
+def delete_my_connector(
     config_id: str,
     user: UserProfile = Depends(get_current_user_dep),
 ):

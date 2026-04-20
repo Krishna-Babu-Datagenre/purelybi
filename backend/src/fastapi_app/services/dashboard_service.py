@@ -255,7 +255,6 @@ def build_live_template_dashboard(
         force_refresh=force_refresh,
         filters=filters,
         filters_from_preset=filters_from_preset,
-        persist_cache=False,
     )
     return {
         "id": tmpl["id"],
@@ -714,8 +713,15 @@ def get_user_dashboard(
     dashboard_id: str,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
+    hydrate: bool = True,
 ) -> dict[str, Any] | None:
-    """Return a dashboard with its widgets, or ``None`` if not found / not owned."""
+    """Return a dashboard with its widgets, or ``None`` if not found / not owned.
+
+    When *hydrate* is ``False``, widgets are returned as stored in the database
+    (``chart_config`` from DB, no DuckDB queries). This is instant and useful
+    for a first render; the caller can request ``hydrate=True`` in a follow-up
+    to get live data.
+    """
     client = get_supabase_admin_client()
 
     rows = (
@@ -734,8 +740,8 @@ def get_user_dashboard(
             return build_live_template_dashboard(
                 tmpl,
                 tenant_id=user_id,
-                filters=filters,
-                filters_from_preset=filters_from_preset,
+                filters=filters if hydrate else None,
+                filters_from_preset=filters_from_preset if hydrate else None,
             )
         return None
 
@@ -749,16 +755,17 @@ def get_user_dashboard(
         .execute()
     ).data or []
 
-    # Hydrate widgets (uses cache when fresh, queries DB when stale)
+    if not hydrate:
+        dashboard["widgets"] = widgets
+        return dashboard
+
+    # Hydrate widgets with live DuckDB data
     hydrated = hydrate_widgets(
         widgets,
         tenant_id=user_id,
         filters=filters,
         filters_from_preset=filters_from_preset,
     )
-    if not filters:
-        _persist_widget_cache(hydrated)
-
     dashboard["widgets"] = hydrated
     return dashboard
 
@@ -815,9 +822,6 @@ def refresh_dashboard(
         filters=filters,
         filters_from_preset=filters_from_preset,
     )
-    if not filters:
-        _persist_widget_cache(hydrated)
-
     dashboard["widgets"] = hydrated
     return dashboard
 
@@ -963,29 +967,4 @@ def persist_widget_layouts(
     return True
 
 
-# ---------------------------------------------------------------------------
-# Cache persistence
-# ---------------------------------------------------------------------------
 
-
-def _persist_widget_cache(widgets: list[dict[str, Any]]) -> None:
-    """Save data_snapshot for widgets that were freshly hydrated."""
-    dirty = [w for w in widgets if w.pop("_cache_dirty", False)]
-    if not dirty:
-        return
-
-    client = get_supabase_admin_client()
-    for w in dirty:
-        try:
-            client.table("widgets").update(
-                {
-                    "data_snapshot": w["data_snapshot"],
-                    "data_refreshed_at": w["data_refreshed_at"],
-                }
-            ).eq("id", w["id"]).execute()
-        except Exception:
-            logger.warning(
-                "Failed to persist widget cache for widget id=%s",
-                w.get("id"),
-                exc_info=True,
-            )

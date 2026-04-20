@@ -21,20 +21,44 @@ Supabase client factories.
 from __future__ import annotations
 
 import os
+import threading
 
 from supabase import Client, ClientOptions, create_client
 from supabase.lib.client_options import DEFAULT_HEADERS
 
+# ---------------------------------------------------------------------------
+# Module-level singletons for Supabase clients.
+# Neither the anon client nor the admin client carries per-user state — they
+# are safe to share across all requests for the process lifetime.  Creating a
+# new client on every call costs ~2-4 s (HTTP client init inside the SDK)
+# which dominated every API endpoint's latency.
+# ---------------------------------------------------------------------------
+_anon_client: "Client | None" = None
+_anon_client_lock = threading.Lock()
+_admin_client: "Client | None" = None
+_admin_client_lock = threading.Lock()
+
 
 def get_supabase_client() -> Client:
-    """Return a Supabase client configured with the anon (public) key."""
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        raise RuntimeError(
-            "SUPABASE_URL and SUPABASE_KEY environment variables must be set."
-        )
-    return create_client(url, key)
+    """Return a **singleton** Supabase client configured with the anon (public) key.
+
+    The anon client carries no user-specific session state — it is safe to
+    share across requests. Thread-safe via double-checked locking.
+    """
+    global _anon_client
+    if _anon_client is not None:
+        return _anon_client
+    with _anon_client_lock:
+        if _anon_client is not None:
+            return _anon_client
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_KEY environment variables must be set."
+            )
+        _anon_client = create_client(url, key)
+        return _anon_client
 
 
 def get_supabase_user_client(access_token: str) -> Client:
@@ -52,11 +76,25 @@ def get_supabase_user_client(access_token: str) -> Client:
 
 
 def get_supabase_admin_client() -> Client:
-    """Return a Supabase client using the service_role key (bypasses RLS)."""
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        raise RuntimeError(
-            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables must be set."
-        )
-    return create_client(url, key)
+    """Return a **singleton** Supabase client using the service_role key (bypasses RLS).
+
+    The client is created once and reused for the process lifetime — initialising
+    a new client per-request added ~4 s of overhead to every API call.
+    Thread-safe via double-checked locking.
+    """
+    global _admin_client
+    # Fast path: already initialised.
+    if _admin_client is not None:
+        return _admin_client
+    with _admin_client_lock:
+        # Re-check after acquiring lock (another thread may have initialised it).
+        if _admin_client is not None:
+            return _admin_client
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        if not url or not key:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables must be set."
+            )
+        _admin_client = create_client(url, key)
+        return _admin_client
