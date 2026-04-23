@@ -34,3 +34,5 @@ AzureCLI.msi
 fb_config.json
 tests/*
 one-off/*
+.vscode/*
+archived/*

@@ -58,6 +58,8 @@ import pandas as pd
 from azure.storage.blob import BlobServiceClient
 from azure.storage.fileshare import ShareFileClient
 
+from preprocess import preprocess_batch
+
 # ── Config from env ───────────────────────────────────────────────────
 
 WORK_ID = os.environ["WORK_ID"]
@@ -267,7 +269,7 @@ def flush_full_refresh_batch(
 
     Returns the blob path written.
     """
-    df = pd.DataFrame(records)
+    df = preprocess_batch(records, stream_name)
     df = sanitize_df_for_parquet(df)
 
     prefix = _blob_prefix_for_stream(source_name, stream_name)
@@ -278,7 +280,7 @@ def flush_full_refresh_batch(
     out.seek(0)
 
     container.upload_blob(blob_path, out, overwrite=True)
-    print(f"  {stream_name}: flushed {len(records)} rows → {blob_path}")
+    print(f"  {stream_name}: flushed {len(df)} rows → {blob_path}")
 
     del df, out
     gc.collect()
@@ -319,7 +321,7 @@ def flush_incremental_batch(
     prefix = _blob_prefix_for_stream(source_name, stream_name)
 
     for (year, month), partition_records in partitions.items():
-        df = pd.DataFrame(partition_records)
+        df = preprocess_batch(partition_records, stream_name)
         df = sanitize_df_for_parquet(df)
 
         part_key = (stream_name, year, month)
@@ -339,7 +341,7 @@ def flush_incremental_batch(
 
         print(
             f"  {stream_name}/year={year}/month={month:02d}: "
-            f"flushed {len(partition_records)} rows → part{part_num}"
+            f"flushed {len(df)} rows → part{part_num}"
         )
 
         del df, out

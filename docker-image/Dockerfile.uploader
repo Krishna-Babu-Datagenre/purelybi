@@ -17,6 +17,7 @@ RUN pip install --no-cache-dir \
     azure-storage-blob \
     azure-storage-file-share
 
+COPY preprocess.py /app/preprocess.py
 COPY sync_uploader.py /app/sync_uploader.py
 
 ENTRYPOINT ["python", "sync_uploader.py"]

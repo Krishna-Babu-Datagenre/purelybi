@@ -171,3 +171,13 @@ See [`docs/sync_v2_provisioning_guide.md`](docs/sync_v2_provisioning_guide.md) f
   - `.github/workflows/deploy-azure-function-schema-updater.yml`
   - `.github/workflows/deploy-azure-function-sync-orchestrator.yml`
 - **Sync uploader image** (build / push / redeploy): `docker-image/README.md`
+
+
+### Becnhmarking
+```
+# from backend/ with the venv active:
+uv run python tests/perf_benchmark.py `
+    --email contactkrishnababu@gmail.com `
+    --password ****** `
+    --passes 3
+```
