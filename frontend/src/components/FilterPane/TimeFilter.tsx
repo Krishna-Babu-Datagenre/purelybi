@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
-import { Calendar, ChevronDown } from 'lucide-react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { Calendar, ChevronDown, Search } from 'lucide-react';
 import { useFilterStore } from '../../store/filterStore';
 import type { TimePreset, ColumnRef } from '../../types/metadata';
 
@@ -21,10 +21,17 @@ const PRESETS: { label: string; value: TimePreset }[] = [
 
 const TimeFilter = () => {
   const columns = useFilterStore((s) => s.columns);
-  const temporalCols = useMemo(
-    () => columns.filter((c) => c.is_filterable && c.semantic_type === 'temporal'),
-    [columns],
-  );
+  const selectedSource = useFilterStore((s) => s.selectedSource);
+  const getSourceTableNames = useFilterStore((s) => s.getSourceTableNames);
+  const temporalCols = useMemo(() => {
+    const sourceTables = getSourceTableNames();
+    return columns.filter(
+      (c) =>
+        c.is_filterable &&
+        c.semantic_type === 'temporal' &&
+        (!sourceTables || sourceTables.has(c.table_name)),
+    );
+  }, [columns, selectedSource, getSourceTableNames]);
   const tables = useFilterStore((s) => s.tables);
   const filterSpec = useFilterStore((s) => s.filterSpec);
   const setTimeFilter = useFilterStore((s) => s.setTimeFilter);
@@ -32,6 +39,8 @@ const TimeFilter = () => {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [columnPickerOpen, setColumnPickerOpen] = useState(false);
+  const [colSearch, setColSearch] = useState('');
+  const colSearchRef = useRef<HTMLInputElement>(null);
   // Locally-selected column ref (survives before any preset/range is chosen)
   const [localSelectedRef, setLocalSelectedRef] = useState<ColumnRef | null>(null);
 
@@ -57,6 +66,24 @@ const TimeFilter = () => {
   // Effective selected ref: prefer what's stored in the active filter, then local pick
   const selectedRef: ColumnRef | undefined = activeTimeFilter?.column_ref ?? localSelectedRef ?? undefined;
 
+  // Focus search when column picker opens
+  useEffect(() => {
+    if (columnPickerOpen && colSearchRef.current) {
+      colSearchRef.current.focus();
+    }
+  }, [columnPickerOpen]);
+
+  // Filter column options by search query
+  const visibleColumnOptions = useMemo(() => {
+    if (!colSearch) return columnOptions;
+    const q = colSearch.toLowerCase();
+    return columnOptions.filter(
+      (c) =>
+        c.column_name.toLowerCase().includes(q) ||
+        c.table_name.toLowerCase().includes(q),
+    );
+  }, [columnOptions, colSearch]);
+
   const selectColumn = useCallback(
     (ref: ColumnRef) => {
       setLocalSelectedRef(ref);
@@ -65,6 +92,7 @@ const TimeFilter = () => {
         setTimeFilter({ ...activeTimeFilter, column_ref: ref });
       }
       setColumnPickerOpen(false);
+      setColSearch('');
     },
     [activeTimeFilter, setTimeFilter],
   );
@@ -126,7 +154,20 @@ const TimeFilter = () => {
           </button>
           {columnPickerOpen && (
             <div className="filter-dropdown">
-              {columnOptions.map((c) => (
+              {columnOptions.length > 5 && (
+                <div className="filter-dropdown__search">
+                  <Search size={12} className="text-[var(--text-muted)]" />
+                  <input
+                    ref={colSearchRef}
+                    type="text"
+                    value={colSearch}
+                    onChange={(e) => setColSearch(e.target.value)}
+                    placeholder="Search columns…"
+                    className="filter-dropdown__search-input"
+                  />
+                </div>
+              )}
+              {visibleColumnOptions.map((c) => (
                 <button
                   key={`${c.table_name}.${c.column_name}`}
                   type="button"
@@ -141,6 +182,9 @@ const TimeFilter = () => {
                   <span>{c.column_name}</span>
                 </button>
               ))}
+              {visibleColumnOptions.length === 0 && (
+                <p className="filter-empty-hint" style={{ padding: '0.5rem' }}>No matching columns</p>
+              )}
             </div>
           )}
         </div>

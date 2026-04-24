@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
-import { SlidersHorizontal, ChevronDown, X } from 'lucide-react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { SlidersHorizontal, ChevronDown, X, Search } from 'lucide-react';
 import { useFilterStore } from '../../store/filterStore';
 import type { NumericFilter as NumFilterType, ColumnRef, ColumnMetadata } from '../../types/metadata';
 
@@ -11,10 +11,17 @@ import type { NumericFilter as NumFilterType, ColumnRef, ColumnMetadata } from '
 
 const NumericFilter = () => {
   const columns = useFilterStore((s) => s.columns);
-  const numericCols = useMemo(
-    () => columns.filter((c) => c.is_filterable && (c.semantic_type === 'numeric' || c.semantic_type === 'measure')),
-    [columns],
-  );
+  const selectedSource = useFilterStore((s) => s.selectedSource);
+  const getSourceTableNames = useFilterStore((s) => s.getSourceTableNames);
+  const numericCols = useMemo(() => {
+    const sourceTables = getSourceTableNames();
+    return columns.filter(
+      (c) =>
+        c.is_filterable &&
+        (c.semantic_type === 'numeric' || c.semantic_type === 'measure') &&
+        (!sourceTables || sourceTables.has(c.table_name)),
+    );
+  }, [columns, selectedSource, getSourceTableNames]);
   const filterSpec = useFilterStore((s) => s.filterSpec);
   const addFilter = useFilterStore((s) => s.addFilter);
   const updateFilter = useFilterStore((s) => s.updateFilter);
@@ -22,8 +29,10 @@ const NumericFilter = () => {
 
   const [selectedColKey, setSelectedColKey] = useState<string | null>(null);
   const [colPickerOpen, setColPickerOpen] = useState(false);
+  const [colSearch, setColSearch] = useState('');
   const [minVal, setMinVal] = useState('');
   const [maxVal, setMaxVal] = useState('');
+  const colSearchRef = useRef<HTMLInputElement>(null);
 
   // Group columns by table
   const columnsByTable = useMemo(() => {
@@ -35,6 +44,29 @@ const NumericFilter = () => {
     }
     return map;
   }, [numericCols]);
+
+  // Focus column search when picker opens
+  useEffect(() => {
+    if (colPickerOpen && colSearchRef.current) {
+      colSearchRef.current.focus();
+    }
+  }, [colPickerOpen]);
+
+  // Filter column groups by search
+  const filteredColumnsByTable = useMemo(() => {
+    if (!colSearch) return columnsByTable;
+    const q = colSearch.toLowerCase();
+    const result = new Map<string, ColumnMetadata[]>();
+    for (const [table, cols] of columnsByTable) {
+      const filtered = cols.filter(
+        (c) =>
+          c.column_name.toLowerCase().includes(q) ||
+          table.toLowerCase().includes(q),
+      );
+      if (filtered.length > 0) result.set(table, filtered);
+    }
+    return result;
+  }, [columnsByTable, colSearch]);
 
   // Get existing numeric filters from spec
   const existingNumFilters = useMemo(
@@ -55,6 +87,7 @@ const NumericFilter = () => {
   const handleSelectColumn = useCallback((table: string, column: string) => {
     setSelectedColKey(`${table}.${column}`);
     setColPickerOpen(false);
+    setColSearch('');
     setMinVal('');
     setMaxVal('');
   }, []);
@@ -154,7 +187,20 @@ const NumericFilter = () => {
 
         {colPickerOpen && (
           <div className="filter-dropdown filter-dropdown--wide">
-            {Array.from(columnsByTable.entries()).map(([table, cols]) => (
+            {numericCols.length > 5 && (
+              <div className="filter-dropdown__search">
+                <Search size={12} className="text-[var(--text-muted)]" />
+                <input
+                  ref={colSearchRef}
+                  type="text"
+                  value={colSearch}
+                  onChange={(e) => setColSearch(e.target.value)}
+                  placeholder="Search columns…"
+                  className="filter-dropdown__search-input"
+                />
+              </div>
+            )}
+            {Array.from(filteredColumnsByTable.entries()).map(([table, cols]) => (
               <div key={table}>
                 <div className="filter-dropdown__group">{table}</div>
                 {cols.map((c) => (
@@ -176,6 +222,9 @@ const NumericFilter = () => {
                 ))}
               </div>
             ))}
+            {filteredColumnsByTable.size === 0 && (
+              <p className="filter-empty-hint" style={{ padding: '0.5rem' }}>No matching columns</p>
+            )}
           </div>
         )}
       </div>

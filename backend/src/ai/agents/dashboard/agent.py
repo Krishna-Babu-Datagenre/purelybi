@@ -33,6 +33,7 @@ class DashboardBuilderAgent:
         conn: duckdb.DuckDBPyConnection | None = None,
         *,
         mode: Literal["magic", "guided"] = "guided",
+        user_id: str | None = None,
     ):
         if database.lower() != "duckdb":
             raise ValueError("Only DuckDB is supported.")
@@ -41,7 +42,7 @@ class DashboardBuilderAgent:
         model = (
             get_analyst_llm() if llm is None or isinstance(llm, str) else llm
         )
-        database_tools = build_duckdb_tools(conn, model)
+        database_tools = build_duckdb_tools(conn, model, user_id=user_id)
 
         system_prompt = (
             DASHBOARD_MAGIC_SYSTEM_PROMPT

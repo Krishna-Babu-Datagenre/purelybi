@@ -78,6 +78,11 @@ interface ChatState {
   lastTurnToolResults: ChatMessageWithCharts[];
   thoughtSectionCollapsed: boolean;
 
+  /** Name of the dashboard the user has attached to this chat (if any). */
+  attachedDashboardName: string | null;
+  attachDashboard: (name: string) => void;
+  clearAttachedDashboard: () => void;
+
   openChat: () => void;
   closeChat: () => void;
   toggleChat: () => void;
@@ -109,6 +114,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentTurnToolResults: [],
   lastTurnToolResults: [],
   thoughtSectionCollapsed: true,
+  attachedDashboardName: null,
+
+  attachDashboard: (name) => set({ attachedDashboardName: name.trim() || null }),
+  clearAttachedDashboard: () => set({ attachedDashboardName: null }),
 
   openChat: () => {
     const currentUserId = getUserSessionId();
@@ -257,6 +266,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     };
 
     try {
+      const attachedDashboardName = get().attachedDashboardName;
       await streamChat(
         {
           message: trimmed,
@@ -264,6 +274,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agent_type: 'analyst',
           llm: 'gpt-4.1',
           database: 'DuckDB',
+          ...(attachedDashboardName ? { attached_dashboard_name: attachedDashboardName } : {}),
         },
         onEvent
       );

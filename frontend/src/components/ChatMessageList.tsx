@@ -4,13 +4,20 @@ import { useChatStore } from '../store/useChatStore';
 import type { ChatMessageWithCharts, StreamingToolCall, ToolCallResult } from '../store/useChatStore';
 import type { ChatChartItem } from '../types';
 import ChatChartBlock from './ChatChartBlock';
+import MarkdownMessage from './data/MarkdownMessage';
 
 function MessageBubble({ message }: { message: ChatMessageWithCharts }) {
   const isUser = message.role === 'user';
 
   return (
     <div className={`chat-msg ${isUser ? 'chat-msg--user' : 'chat-msg--assistant'}`}>
-      <div className="chat-msg-content">{message.content ?? ''}</div>
+      {isUser ? (
+        <div className="chat-msg-content">{message.content ?? ''}</div>
+      ) : (
+        <div className="chat-msg-content chat-msg-content--md min-w-0">
+          <MarkdownMessage content={message.content ?? ''} className="text-[0.8125rem] leading-[1.45]" />
+        </div>
+      )}
       {message.charts && message.charts.length > 0 && (
         <div className="chat-msg-charts">
           {message.charts.map((item, i) => (
@@ -186,7 +193,12 @@ export default function ChatMessageList() {
         <div className="chat-streaming-block" data-streaming>
           <StreamingThoughtSection />
           <div className="chat-msg chat-msg--assistant chat-msg--streaming">
-          <div className="chat-msg-content">{streamingContent || (streamingToolCalls.length > 0 ? '' : '…')}</div>
+          <div className="chat-msg-content chat-msg-content--md min-w-0">
+            <MarkdownMessage
+              content={streamingContent || (streamingToolCalls.length > 0 ? '' : '…')}
+              className="text-[0.8125rem] leading-[1.45]"
+            />
+          </div>
           {streamingCharts.length > 0 && (
             <div className="chat-msg-charts">
               {streamingCharts.map((item: ChatChartItem, j) => (

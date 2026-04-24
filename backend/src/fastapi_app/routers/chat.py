@@ -81,6 +81,7 @@ async def chat(
             selected_datasets=request.selected_datasets,
             magic_dashboard_name=request.magic_dashboard_name,
             magic_goal=request.magic_goal,
+            attached_dashboard_name=request.attached_dashboard_name,
         ),
         media_type="text/event-stream",
         headers={

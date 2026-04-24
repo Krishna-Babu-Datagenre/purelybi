@@ -301,6 +301,8 @@ export interface ChatSendRequest {
   /** Magic Mode: passed to User Proxy for intent alignment */
   magic_dashboard_name?: string;
   magic_goal?: string;
+  /** Analyst agent: name of dashboard the user has attached to the chat. */
+  attached_dashboard_name?: string;
 }
 
 /** GET /api/dashboards/builder/readiness */

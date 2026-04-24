@@ -8,6 +8,7 @@ from langchain.agents.middleware import SummarizationMiddleware
 
 from ai.agents.sql.prompts import ANALYST_SYSTEM_PROMPT
 from ai.tools.common import calculate, get_current_time
+from ai.tools.dashboard_tools import ANALYST_DASHBOARD_TOOLS
 from ai.tools.sql import create_react_chart, create_react_kpi
 from ai.tools.sql.duckdb_tools import build_duckdb_tools
 from ai.llms import get_analyst_llm
@@ -22,13 +23,14 @@ class AnalystAgent:
         checkpointer=None,
         database: str = "DuckDB",
         conn: duckdb.DuckDBPyConnection | None = None,
+        user_id: str | None = None,
     ):
         if database.lower() != "duckdb":
             raise ValueError("Only DuckDB is supported by AnalystAgent.")
         if conn is None:
             raise ValueError("DuckDB connection is required for AnalystAgent.")
         model = get_analyst_llm() if llm is None or isinstance(llm, str) else llm
-        database_tools = build_duckdb_tools(conn, model)
+        database_tools = build_duckdb_tools(conn, model, user_id=user_id)
 
         self.agent = create_agent(
             model=model,
@@ -38,7 +40,8 @@ class AnalystAgent:
                 get_current_time,
                 create_react_chart,
                 create_react_kpi,
-            ],
+            ]
+            + ANALYST_DASHBOARD_TOOLS,
             middleware=[
                 SummarizationMiddleware(
                     model=model,

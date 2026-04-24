@@ -15,6 +15,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -234,10 +235,13 @@ def _query_db(
         logger.error("DuckDB query failed: %s | params=%s", query[:500], params_list)
         raise
     rows = df.to_dict(orient="records")
-    # Clean up string values that look like Python list repr: "['Foo', 'Bar']"
     for row in rows:
         for k, v in list(row.items()):
-            if isinstance(v, str) and v.startswith("[") and v.endswith("]"):
+            # Replace NaN / Inf with None so the value is JSON-serialisable.
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                row[k] = None
+            # Clean up string values that look like Python list repr: "['Foo', 'Bar']"
+            elif isinstance(v, str) and v.startswith("[") and v.endswith("]"):
                 row[k] = v.strip("[]").replace("'", "").strip()
     return rows
 
@@ -443,6 +447,12 @@ def _build_filter_clause(
     include the ``WHERE`` keyword.
     """
     allowed = _resolve_allowed_filters(tenant_id, table)
+    logger.debug(
+        "_build_filter_clause table=%s allowlist=%s incoming_cols=%s",
+        table,
+        sorted(allowed),
+        [f.get("column") for f in filters],
+    )
     parts: list[str] = []
     params: list[Any] = []
 
@@ -451,9 +461,22 @@ def _build_filter_clause(
         op = f.get("op", "")
         val = f.get("value")
 
-        if col not in allowed or op not in _FILTER_OPS:
+        if col not in allowed:
+            logger.debug(
+                "_build_filter_clause SKIP col=%r not in allowlist for table=%s",
+                col,
+                table,
+            )
+            continue
+        if op not in _FILTER_OPS:
+            logger.debug(
+                "_build_filter_clause SKIP col=%r unsupported op=%r",
+                col,
+                op,
+            )
             continue
         if not _is_safe_identifier(col):
+            logger.debug("_build_filter_clause SKIP col=%r failed safety check", col)
             continue
 
         if op == "eq":
@@ -574,6 +597,11 @@ def _execute_kpi_aggregation(
     field = data_config.get("field", "")
 
     if source not in _ALLOWED_TABLES:
+        logger.debug(
+            "_execute_kpi_aggregation widget=%s SKIP: source=%r not in _ALLOWED_TABLES",
+            widget_id,
+            source,
+        )
         return None
 
     if agg == "custom":
@@ -596,6 +624,19 @@ def _execute_kpi_aggregation(
         if clause:
             sql += f" WHERE {clause}"
             params = tuple(p)
+        else:
+            logger.debug(
+                "_execute_kpi_aggregation widget=%s source=%r clause was empty after _build_filter_clause",
+                widget_id,
+                source,
+            )
+    logger.debug(
+        "_execute_kpi_aggregation widget=%s source=%r sql=%s params=%s",
+        widget_id,
+        source,
+        sql,
+        params,
+    )
 
     sql, params = _apply_native_filter_spec(
         conn, sql, params, filter_spec, relationships, widget_id=widget_id
@@ -689,11 +730,33 @@ def _hydrate_kpi_from_query(
     params: tuple = ()
     if filters:
         source = data_config.get("source", "")
-        if source and _resolve_source_is_filterable(tenant_id, source):
+        filterable = bool(source) and _resolve_source_is_filterable(tenant_id, source)
+        logger.debug(
+            "_hydrate_kpi_from_query widget=%s source=%r filterable=%s has_sources=%s value_col=%r filters=%s",
+            widget_id,
+            source,
+            filterable,
+            bool(data_config.get("sources")),
+            value_col,
+            filters,
+        )
+        if source and filterable:
             clause, p = _build_filter_clause(filters, source, tenant_id=tenant_id)
             if clause:
                 query, p = _inject_where(query, clause, p)
                 params = tuple(p)
+            else:
+                logger.debug(
+                    "_hydrate_kpi_from_query widget=%s source=%r clause was empty after _build_filter_clause",
+                    widget_id,
+                    source,
+                )
+        elif source and not filterable:
+            logger.debug(
+                "_hydrate_kpi_from_query widget=%s SKIP filters: source=%r not filterable",
+                widget_id,
+                source,
+            )
         elif not source and data_config.get("sources"):
             between_val = next(
                 (
@@ -715,6 +778,23 @@ def _hydrate_kpi_from_query(
                     if _is_safe_identifier(col_name):
                         query += f" AND {col_name} >= ? AND {col_name} < ?"
                         params = params + tuple(between_val)
+            else:
+                logger.debug(
+                    "_hydrate_kpi_from_query widget=%s multi-source SKIP: no 'between' filter found",
+                    widget_id,
+                )
+        else:
+            logger.debug(
+                "_hydrate_kpi_from_query widget=%s SKIP filters: no source and no sources in data_config",
+                widget_id,
+            )
+
+    logger.debug(
+        "_hydrate_kpi_from_query widget=%s final query: %s | params: %s",
+        widget_id,
+        query,
+        params,
+    )
 
     query, params = _apply_native_filter_spec(
         conn, query, params, filter_spec, relationships, widget_id=widget_id
@@ -731,7 +811,11 @@ def _hydrate_kpi_from_query(
         try:
             chart_config["value"] = round(float(val), 2)
         except (TypeError, ValueError):
-            pass
+            # NULL aggregation result (e.g. AVG/SUM on 0 matching rows)
+            chart_config["value"] = 0
+    elif not rows:
+        # Query returned no rows at all — filtered to nothing
+        chart_config["value"] = 0
 
     return chart_config
 
@@ -748,7 +832,17 @@ def _hydrate_kpi(
     tenant_id: str | None = None,
 ) -> dict:
     """Build and run a KPI aggregation query, set chart_config['value']."""
-    if data_config.get("components"):
+    has_components = bool(data_config.get("components"))
+    has_query = bool(data_config.get("query") and data_config.get("kpi_value_column"))
+    logger.debug(
+        "_hydrate_kpi widget=%s branch: components=%s query_based=%s structured=%s data_config_keys=%s",
+        widget_id,
+        has_components,
+        has_query,
+        not has_components and not has_query,
+        list(data_config.keys()),
+    )
+    if has_components:
         return _hydrate_kpi_components(
             conn,
             chart_config,
@@ -820,12 +914,33 @@ def _hydrate_chart(
     params: tuple = ()
     if filters:
         source = data_config.get("source", "")
-        if source and _resolve_source_is_filterable(tenant_id, source):
+        filterable = bool(source) and _resolve_source_is_filterable(tenant_id, source)
+        logger.debug(
+            "_hydrate_chart widget=%s source=%r filterable=%s has_sources=%s filters=%s",
+            widget_id,
+            source,
+            filterable,
+            bool(data_config.get("sources")),
+            filters,
+        )
+        if source and filterable:
             # Single-source query: inject WHERE directly.
             clause, p = _build_filter_clause(filters, source, tenant_id=tenant_id)
             if clause:
                 query, p = _inject_where(query, clause, p)
                 params = tuple(p)
+            else:
+                logger.debug(
+                    "_hydrate_chart widget=%s source=%r clause was empty after _build_filter_clause",
+                    widget_id,
+                    source,
+                )
+        elif source and not filterable:
+            logger.debug(
+                "_hydrate_chart widget=%s SKIP filters: source=%r not filterable (empty allowlist)",
+                widget_id,
+                source,
+            )
         elif not source and data_config.get("sources"):
             # Multi-source (JOIN) query: column references may be ambiguous, so
             # wrap the whole query and filter on the projected xAxis date alias.
@@ -847,6 +962,23 @@ def _hydrate_chart(
                         f" WHERE {xaxis_field} >= ? AND {xaxis_field} < ?"
                     )
                     params = tuple(between_val)
+                else:
+                    logger.debug(
+                        "_hydrate_chart widget=%s multi-source SKIP: no 'between' filter found xAxis=%r",
+                        widget_id,
+                        xaxis_field,
+                    )
+            else:
+                logger.debug(
+                    "_hydrate_chart widget=%s multi-source SKIP: xAxis field missing or unsafe xAxis=%r",
+                    widget_id,
+                    xaxis_field,
+                )
+        else:
+            logger.debug(
+                "_hydrate_chart widget=%s SKIP filters: no source and no sources in data_config",
+                widget_id,
+            )
 
     query, params = _apply_native_filter_spec(
         conn, query, params, filter_spec, relationships, widget_id=widget_id
@@ -854,11 +986,25 @@ def _hydrate_chart(
 
     logger.debug("_hydrate_chart final query: %s | params: %s", query, params)
     rows = _query_db(conn, query, params)
-    if not rows:
-        return chart_config
 
     mappings = data_config.get("mappings", {})
     series = chart_config.get("series", [])
+
+    if not rows:
+        # Filtered query returned nothing — clear chart data so the UI
+        # shows an empty state instead of stale pre-filter values.
+        for axis_key in ("xAxis", "yAxis"):
+            axis_cfg = chart_config.get(axis_key)
+            if isinstance(axis_cfg, dict) and "data" in axis_cfg:
+                axis_cfg["data"] = []
+            elif isinstance(axis_cfg, list):
+                for ax in axis_cfg:
+                    if ax.get("type") == "category":
+                        ax["data"] = []
+        for s in series:
+            if "data" in s:
+                s["data"] = []
+        return chart_config
 
     # ---- xAxis / yAxis category data ----
     for axis_key in ("xAxis", "yAxis"):

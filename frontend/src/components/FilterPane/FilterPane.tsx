@@ -3,6 +3,7 @@ import { Filter, X, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useFilterStore } from '../../store/filterStore';
 import { useDashboardStore } from '../../store/useDashboardStore';
+import SourceFilter from './SourceFilter';
 import TimeFilter from './TimeFilter';
 import CategoricalFilter from './CategoricalFilter';
 import NumericFilter from './NumericFilter';
@@ -152,6 +153,7 @@ const FilterPane = () => {
                 </div>
               ) : (
                 <>
+                  <SourceFilter />
                   <TimeFilter />
                   <CategoricalFilter />
                   <NumericFilter />

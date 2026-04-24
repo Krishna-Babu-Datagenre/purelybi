@@ -79,6 +79,68 @@ _session_store: dict[str, _QuerySnapshot] = {}
 _session_discovered_tables: dict[str, frozenset[str]] = {}
 
 
+@dataclass
+class _LastWidget:
+    """Caches the most recently generated widget so the agent can add it
+    to a dashboard without re-supplying the full config."""
+
+    chart_type: str  # "bar" | "line" | "area" | "pie" | "scatter" | "kpi"
+    title: str
+    chart_config: dict[str, Any] = field(default_factory=dict)
+    data_config: dict[str, Any] | None = None
+    validation: dict[str, Any] = field(default_factory=dict)
+
+
+# Most-recently generated widget, keyed by session_id.
+_session_last_widget: dict[str, _LastWidget] = {}
+
+
+def store_last_widget(session_id: str, widget: _LastWidget) -> None:
+    _session_last_widget[session_id] = widget
+
+
+def get_last_widget(session_id: str) -> _LastWidget | None:
+    return _session_last_widget.get(session_id)
+
+
+def clear_last_widget(session_id: str) -> None:
+    _session_last_widget.pop(session_id, None)
+
+
+def _auto_add_widget(
+    *,
+    dashboard_id: str,
+    title: str,
+    widget_type: str,
+    chart_config: dict[str, Any],
+    data_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Persist the widget to a dashboard owned by the current authenticated user.
+
+    Imports are local to avoid circular imports between charts.py and the
+    fastapi_app / ai.agents.dashboard packages.
+    """
+    from ai.agents.dashboard.context import get_dashboard_tool_context
+    from fastapi_app.services.dashboard_service import (
+        add_widget_to_dashboard,
+    )
+
+    ctx = get_dashboard_tool_context()
+    row = add_widget_to_dashboard(
+        ctx.user_id,
+        dashboard_id,
+        title=title,
+        widget_type=widget_type,
+        chart_config=chart_config,
+        data_config=data_config,
+    )
+    return {
+        "id": row.get("id"),
+        "title": row.get("title"),
+        "type": row.get("type"),
+    }
+
+
 def store_query_snapshot(session_id: str, query: str, df: pd.DataFrame) -> None:
     """Atomically store both the SQL query and the DataFrame it produced."""
     _session_store[session_id] = _QuerySnapshot(query=query, df=df)
@@ -130,6 +192,7 @@ def clear_query_result(session_id: str) -> None:
     """Clear the stored query snapshot for a session."""
     _session_store.pop(session_id, None)
     _session_discovered_tables.pop(session_id, None)
+    _session_last_widget.pop(session_id, None)
 
 
 # ============================================================================
@@ -735,6 +798,57 @@ def _detect_source_tables(sql: str) -> list[str]:
     return sorted(matched)
 
 
+def _validate_chart_data(
+    df: pd.DataFrame,
+    chart_type: str,
+    *,
+    x: str | None = None,
+    y: str | None = None,
+    names: str | None = None,
+    values: str | None = None,
+) -> dict[str, Any]:
+    """Inspect the query result to ensure the widget will render something meaningful.
+
+    Returns a dict with:
+      - ``row_count``: total rows in result.
+      - ``non_null_values``: count of numeric rows that will actually be plotted.
+      - ``ok``: True if the widget is safe to add.
+      - ``reason``: short explanation when ``ok`` is False.
+    """
+    info: dict[str, Any] = {"row_count": int(len(df)), "ok": True}
+    if df.empty:
+        info["ok"] = False
+        info["reason"] = "Query returned 0 rows."
+        return info
+
+    value_col = values if chart_type == "pie" else y
+    if value_col and value_col in df.columns:
+        series = pd.to_numeric(df[value_col], errors="coerce")
+        non_null = int(series.notna().sum())
+        non_zero = int((series.fillna(0) != 0).sum())
+        info["non_null_values"] = non_null
+        info["non_zero_values"] = non_zero
+        if non_null == 0:
+            info["ok"] = False
+            info[
+                "reason"
+            ] = f"All values in '{value_col}' are null/non-numeric."
+        elif non_zero == 0:
+            info["ok"] = False
+            info[
+                "reason"
+            ] = f"All values in '{value_col}' are zero — widget would look empty."
+
+    # Trend charts with only one point are usually not useful.
+    if info["ok"] and chart_type in ("line", "area") and info["row_count"] < 2:
+        info["ok"] = False
+        info["reason"] = (
+            f"{chart_type.title()} chart needs at least 2 rows; got "
+            f"{info['row_count']}."
+        )
+    return info
+
+
 def _build_chart_data_config(
     sql: str,
     chart_type: str,
@@ -828,6 +942,7 @@ def create_react_chart(
     hole: float = 0,
     barmode: Literal["group", "stack"] = "group",
     area: bool = False,
+    auto_add_to_dashboard_id: str | None = None,
 ) -> str:
     """
     Create an Apache ECharts configuration from the most recent SQL query results.
@@ -859,6 +974,10 @@ def create_react_chart(
             - 'group': Clustered bars side by side (use with color parameter).
             - 'stack': Stacked bars on top of each other (use with color parameter).
         area: For line charts - whether to fill the area under the line (default: False).
+        auto_add_to_dashboard_id: If set, the validated widget is created AND immediately added
+            to this dashboard in the same tool call — no follow-up `dashboard_add_widget` needed.
+            The dashboard must be owned by the authenticated user. If validation fails, nothing
+            is added.
 
     Returns:
         A JSON string containing the ECharts configuration and widget metadata
@@ -896,6 +1015,27 @@ def create_react_chart(
             return json.dumps(
                 {
                     "error": f"Unknown chart type: {chart_type}. Valid options: {list(ECHARTS_BUILDERS.keys())}"
+                }
+            )
+
+        # Validate that the query result will actually render something.
+        validation = _validate_chart_data(
+            df,
+            chart_type,
+            x=x,
+            y=y,
+            names=names,
+            values=values,
+        )
+        if not validation["ok"]:
+            return json.dumps(
+                {
+                    "error": (
+                        f"Refusing to build an empty {chart_type} widget: "
+                        f"{validation.get('reason', 'data validation failed')}. "
+                        "Adjust the SQL query (filters, joins, aggregation) or pick a different metric, then try again."
+                    ),
+                    "validation": validation,
                 }
             )
 
@@ -966,9 +1106,11 @@ def create_react_chart(
             "success": True,
             "chart_type": widget_type,
             "chartConfig": echarts_config,
+            "validation": validation,
         }
 
         last_sql = get_last_query(session_id)
+        data_cfg: dict[str, Any] | None = None
         if last_sql:
             data_cfg = _build_chart_data_config(
                 last_sql,
@@ -982,7 +1124,48 @@ def create_react_chart(
             if data_cfg:
                 result["dataConfig"] = data_cfg
 
-        return json.dumps(result)
+        # Cache as the most recent widget so `dashboard_add_widget` can reuse it
+        # without the agent re-supplying chart_config / data_config JSON.
+        store_last_widget(
+            session_id,
+            _LastWidget(
+                chart_type=widget_type,
+                title=title or "",
+                chart_config=echarts_config,
+                data_config=data_cfg,
+                validation=validation,
+            ),
+        )
+        result["widget_ready"] = True
+        result["hint"] = (
+            "Call dashboard_add_widget(dashboard_id) to add this widget — "
+            "chart_config and data_config are cached server-side; you only need "
+            "to override title or widget_type if different."
+        )
+
+        if auto_add_to_dashboard_id:
+            try:
+                added = _auto_add_widget(
+                    dashboard_id=auto_add_to_dashboard_id,
+                    title=title or "Untitled",
+                    widget_type=widget_type,
+                    chart_config=echarts_config,
+                    data_config=data_cfg,
+                )
+                result["added_widget"] = added
+                result["hint"] = (
+                    "Widget already added to dashboard "
+                    f"{auto_add_to_dashboard_id}. Do NOT call dashboard_add_widget for it."
+                )
+                clear_last_widget(session_id)
+            except Exception as auto_err:  # pragma: no cover - surfaces to agent
+                result["auto_add_error"] = str(auto_err)
+                result["hint"] = (
+                    "Auto-add failed — call dashboard_add_widget(dashboard_id) "
+                    "manually; the widget config is still cached."
+                )
+
+        return json.dumps(result, default=str)
 
     except TypeError as e:
         return json.dumps(
@@ -1028,6 +1211,7 @@ def create_react_kpi(
     icon: Literal["revenue", "orders", "aov", "customers", "generic"] | None = None,
     sparkline_value_column: str | None = None,
     sparkline_max_points: int = 32,
+    auto_add_to_dashboard_id: str | None = None,
 ) -> str:
     """
     Build a KPI card config from the most recent ``sql_db_query`` result for the React dashboard.
@@ -1049,6 +1233,8 @@ def create_react_kpi(
         sparkline_value_column: If set and the result has multiple rows, build a sparkline from
             this column (most recent ``sparkline_max_points`` values, in row order).
         sparkline_max_points: Cap on sparkline length when many rows are returned.
+        auto_add_to_dashboard_id: If set, the validated KPI is created AND immediately added to
+            this dashboard in the same tool call — no follow-up `dashboard_add_widget` needed.
 
     Returns:
         JSON string with ``success``, ``chart_type`` ``"kpi"``, ``chartConfig`` (KpiConfig-shaped
@@ -1138,11 +1324,63 @@ def create_react_kpi(
         }
 
         last_sql = get_last_query(session_id)
+        data_cfg: dict[str, Any] | None = None
         if last_sql:
             data_cfg = _build_kpi_data_config(last_sql, value_column)
             if data_cfg:
                 result["dataConfig"] = data_cfg
 
-        return json.dumps(result)
+        # Lightweight validation — primary value already parsed above, so record
+        # the signal that helps the agent decide whether to keep this widget.
+        validation: dict[str, Any] = {
+            "ok": True,
+            "row_count": int(len(df)),
+            "value": value,
+        }
+        if value == 0:
+            validation["warning"] = (
+                "KPI value is 0 — confirm this is meaningful before adding to a dashboard."
+            )
+        result["validation"] = validation
+
+        store_last_widget(
+            session_id,
+            _LastWidget(
+                chart_type="kpi",
+                title=title or "",
+                chart_config=kpi,
+                data_config=data_cfg,
+                validation=validation,
+            ),
+        )
+        result["widget_ready"] = True
+        result["hint"] = (
+            "Call dashboard_add_widget(dashboard_id) to add this KPI — the "
+            "config is cached server-side; no need to resend chart_config_json."
+        )
+
+        if auto_add_to_dashboard_id:
+            try:
+                added = _auto_add_widget(
+                    dashboard_id=auto_add_to_dashboard_id,
+                    title=title or "Untitled",
+                    widget_type="kpi",
+                    chart_config=kpi,
+                    data_config=data_cfg,
+                )
+                result["added_widget"] = added
+                result["hint"] = (
+                    "KPI already added to dashboard "
+                    f"{auto_add_to_dashboard_id}. Do NOT call dashboard_add_widget for it."
+                )
+                clear_last_widget(session_id)
+            except Exception as auto_err:  # pragma: no cover
+                result["auto_add_error"] = str(auto_err)
+                result["hint"] = (
+                    "Auto-add failed — call dashboard_add_widget(dashboard_id) "
+                    "manually; the KPI config is still cached."
+                )
+
+        return json.dumps(result, default=str)
     except Exception as e:
         return json.dumps({"error": f"Error creating KPI: {str(e)}"})

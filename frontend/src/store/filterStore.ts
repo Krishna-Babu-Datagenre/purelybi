@@ -6,11 +6,13 @@ import type {
   Filter,
   TimeFilter,
 } from '../types/metadata';
+import type { SyncedTableInfo } from '../types/index';
 import {
   listTableMetadata,
   listColumnMetadata,
   getColumnValues,
 } from '../services/metadataApi';
+import { listSyncedTablesMetadata } from '../services/backendClient';
 
 /* ─────────────────────────────────────────────
    Filter Store
@@ -23,6 +25,7 @@ interface FilterState {
   /* ── Metadata cache ── */
   tables: TableMetadata[];
   columns: ColumnMetadata[];
+  sources: SyncedTableInfo[];
   metadataLoading: boolean;
   metadataLoaded: boolean;
   metadataError: string | null;
@@ -34,6 +37,9 @@ interface FilterState {
   /* ── Active filter spec ── */
   filterSpec: FilterSpec;
 
+  /* ── Source filter ── */
+  selectedSource: string | null;
+
   /* ── Pane UI state ── */
   paneOpen: boolean;
 
@@ -41,6 +47,7 @@ interface FilterState {
   fetchMetadata: () => Promise<void>;
   fetchColumnValues: (table: string, column: string) => Promise<void>;
 
+  setSelectedSource: (sourceId: string | null) => void;
   setTimeFilter: (time: TimeFilter | undefined) => void;
   addFilter: (filter: Filter) => void;
   updateFilter: (index: number, filter: Filter) => void;
@@ -51,6 +58,7 @@ interface FilterState {
   setPaneOpen: (open: boolean) => void;
 
   /* ── Derived helpers ── */
+  getSourceTableNames: () => Set<string> | null;
   getFilterableColumns: () => ColumnMetadata[];
   getTemporalColumns: () => ColumnMetadata[];
   getCategoricalColumns: () => ColumnMetadata[];
@@ -70,6 +78,7 @@ const FILTERABLE_SEMANTIC_TYPES = new Set([
 export const useFilterStore = create<FilterState>((set, get) => ({
   tables: [],
   columns: [],
+  sources: [],
   metadataLoading: false,
   metadataLoaded: false,
   metadataError: null,
@@ -79,6 +88,8 @@ export const useFilterStore = create<FilterState>((set, get) => ({
 
   filterSpec: { ...EMPTY_FILTER_SPEC },
 
+  selectedSource: null,
+
   paneOpen: false,
 
   /* ── Fetch metadata ── */
@@ -86,11 +97,12 @@ export const useFilterStore = create<FilterState>((set, get) => ({
     if (get().metadataLoading) return;
     set({ metadataLoading: true, metadataError: null });
     try {
-      const [tables, columns] = await Promise.all([
+      const [tables, columns, sources] = await Promise.all([
         listTableMetadata(),
         listColumnMetadata(),
+        listSyncedTablesMetadata().catch(() => [] as SyncedTableInfo[]),
       ]);
-      set({ tables, columns, metadataLoading: false, metadataLoaded: true });
+      set({ tables, columns, sources, metadataLoading: false, metadataLoaded: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       set({ metadataError: msg, metadataLoading: false });
@@ -115,6 +127,11 @@ export const useFilterStore = create<FilterState>((set, get) => ({
         columnValuesLoading: { ...s.columnValuesLoading, [key]: false },
       }));
     }
+  },
+
+  /* ── Source filter ── */
+  setSelectedSource: (sourceId) => {
+    set({ selectedSource: sourceId });
   },
 
   /* ── Time filter ── */
@@ -145,7 +162,7 @@ export const useFilterStore = create<FilterState>((set, get) => ({
   },
 
   clearAllFilters: () => {
-    set({ filterSpec: { ...EMPTY_FILTER_SPEC } });
+    set({ filterSpec: { ...EMPTY_FILTER_SPEC }, selectedSource: null });
   },
 
   /* ── Pane toggle ── */
@@ -153,6 +170,45 @@ export const useFilterStore = create<FilterState>((set, get) => ({
   setPaneOpen: (open) => set({ paneOpen: open }),
 
   /* ── Derived helpers (selectors) ── */
+  getSourceTableNames: () => {
+    const { selectedSource, sources, tables } = get();
+    if (!selectedSource) return null;
+    const src = sources.find((s) => s.connector_config_id === selectedSource);
+    if (!src) return null;
+
+    // Derive the connector folder prefix used in DuckDB view names.
+    // docker_repository e.g. "airbyte/source-mongodb-v2" → last segment "source-mongodb-v2"
+    // DuckDB view names replace non-alphanumeric chars with "_": "source_mongodb_v2"
+    const lastSegment = (src.docker_repository || '').split('/').pop() || '';
+    const folderPrefix = lastSegment.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+
+    // Match metadata table names that belong to this connector.
+    // Convention: table_name = "<folder_prefix>_<stream_name>" (with stream also normalised)
+    const streamSet = new Set(src.synced_tables.map((s) => s.toLowerCase()));
+    const matched = new Set<string>();
+    for (const t of tables) {
+      const tn = t.table_name.toLowerCase();
+      // Check if the table belongs to this connector folder
+      if (folderPrefix && tn.startsWith(folderPrefix + '_')) {
+        const streamPart = tn.slice(folderPrefix.length + 1);
+        if (streamSet.has(streamPart)) {
+          matched.add(t.table_name);
+        }
+      }
+    }
+
+    // Fallback: if no matches found via prefix, try direct stream name match
+    if (matched.size === 0) {
+      for (const t of tables) {
+        if (streamSet.has(t.table_name.toLowerCase())) {
+          matched.add(t.table_name);
+        }
+      }
+    }
+
+    return matched.size > 0 ? matched : null;
+  },
+
   getFilterableColumns: () => {
     return get().columns.filter(
       (c) => c.is_filterable && FILTERABLE_SEMANTIC_TYPES.has(c.semantic_type),

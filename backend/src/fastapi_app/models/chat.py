@@ -63,6 +63,14 @@ class ChatRequest(BaseModel):
         default=None,
         description="When dashboard_mode is 'magic': user-stated objective (for User Proxy context).",
     )
+    attached_dashboard_name: str | None = Field(
+        default=None,
+        description=(
+            "Name of the dashboard the user has attached to the chat. Resolved "
+            "server-side to an ID and injected as context so the analyst agent "
+            "can read/update its widgets."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

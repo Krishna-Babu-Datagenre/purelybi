@@ -110,6 +110,7 @@ def _get_or_create_agent(
             views_filter=views_filter,
         )
         agent_kwargs["conn"] = conn
+        agent_kwargs["user_id"] = tenant_id
         if agent_type == "dashboard":
             agent_kwargs["mode"] = dashboard_mode
 
@@ -326,6 +327,7 @@ async def stream_agent_response(
     selected_datasets: list[str] | None = None,
     magic_dashboard_name: str | None = None,
     magic_goal: str | None = None,
+    attached_dashboard_name: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Async generator that yields **Server-Sent Event** (SSE) formatted
@@ -374,10 +376,46 @@ async def stream_agent_response(
     dash_ctx_token = None
     if agent_type == "dashboard":
         dash_ctx_token = set_dashboard_tool_context(tenant_id)
+    elif agent_type == "analyst" and attached_dashboard_name:
+        # Analyst agent needs the same tool-context so its dashboard edit tools
+        # resolve the user id correctly.
+        dash_ctx_token = set_dashboard_tool_context(tenant_id)
     entry = _sessions.get(session_id) or {}
     set_discovered_tables(
         session_id, entry.get("discovered_tables", frozenset())
     )
+
+    # Resolve attached dashboard name → id once per turn and prepend as
+    # context so the analyst agent has a stable dashboard_id to work with.
+    effective_message = message
+    if agent_type == "analyst" and attached_dashboard_name:
+        try:
+            from fastapi_app.services.dashboard_service import (
+                list_user_dashboards,
+            )
+
+            target_name = attached_dashboard_name.strip()
+            target_norm = target_name.casefold()
+            rows = list_user_dashboards(tenant_id)
+            match = next(
+                (r for r in rows if str(r.get("name", "")).casefold() == target_norm),
+                None,
+            )
+            if match is not None:
+                effective_message = (
+                    f"[Attached dashboard: name='{match.get('name')}', "
+                    f"id='{match.get('id')}']\n\n{message}"
+                )
+            else:
+                effective_message = (
+                    f"[Attached dashboard name='{target_name}' was not found "
+                    f"for this user. Ask them to confirm the dashboard name "
+                    f"before attempting edits.]\n\n{message}"
+                )
+        except Exception:
+            logger.exception(
+                "Failed to resolve attached dashboard name for analyst chat"
+            )
 
     # Yield "start" immediately so the client receives headers and can show
     # "Agent is thinking" / thought section without waiting for the first agent chunk.
@@ -409,7 +447,7 @@ async def stream_agent_response(
         use_magic_proxy = (
             agent_type == "dashboard" and dashboard_mode == "magic"
         )
-        current_user_message = message
+        current_user_message = effective_message
         round_idx = 0
 
         while True:

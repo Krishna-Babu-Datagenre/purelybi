@@ -41,6 +41,7 @@ The BI assistant must autonomously build a useful dashboard from the tenant’s 
 - **No meta commentary**: Your user_message must sound like the real user—no “As the proxy…” or system explanations.
 - **Stop when done**: If the assistant has already created the dashboard with widgets and is wrapping up, set continue_automation to false.
 - **Stop if blocked without a path**: If the assistant only asks for credentials or external actions the user cannot do inside this product, set continue_automation to false.
+- **Validation failures**: If the conversation summary shows that recent `create_react_chart` / `create_react_kpi` calls returned validation errors (empty result, all-null, all-zero, single-point trend), instruct the assistant in plain user language to either rewrite the SQL with broader filters / different aggregation, or **drop that metric and pick a different one**. Tell it explicitly **not to retry the identical query**. If a metric has already failed validation twice, tell the assistant to skip it entirely and move on.
 - **JSON only**: Reply with a single JSON object exactly in the schema below—no markdown fences, no extra text.
 
 ## Output schema
@@ -62,6 +63,83 @@ def _truncate(s: str, max_len: int = 1200) -> str:
     if len(s) <= max_len:
         return s
     return s[: max_len - 3] + "..."
+
+
+_CREATE_TOOLS = {"create_react_chart", "create_react_kpi"}
+
+
+def _detect_validation_failures(messages: list[Any]) -> list[dict[str, Any]]:
+    """Scan tool messages for create_react_* validation failures.
+
+    Returns a list of ``{tool, title, reason, attempt_count}`` covering only
+    failures observed in the last ~24 messages, with attempt counts grouped
+    by the failing widget title (or chart_type when title is missing).
+    """
+    failures: dict[str, dict[str, Any]] = {}
+    pending_calls: dict[str, dict[str, Any]] = {}
+
+    for msg in messages[-24:]:
+        # Capture create_react_* tool *calls* so we can map titles to results.
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        for call in tool_calls:
+            name = (
+                call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
+            )
+            if name in _CREATE_TOOLS:
+                args = (
+                    call.get("args")
+                    if isinstance(call, dict)
+                    else getattr(call, "args", {})
+                ) or {}
+                call_id = (
+                    call.get("id")
+                    if isinstance(call, dict)
+                    else getattr(call, "id", None)
+                )
+                if call_id:
+                    pending_calls[call_id] = {
+                        "tool": name,
+                        "title": args.get("title")
+                        or args.get("chart_type")
+                        or "(untitled)",
+                    }
+
+        if getattr(msg, "type", None) != "tool":
+            continue
+        name = getattr(msg, "name", "") or ""
+        if name not in _CREATE_TOOLS:
+            continue
+        body = _stringify_content(getattr(msg, "content", ""))
+        if '"error"' not in body and '"validation"' not in body:
+            continue
+        try:
+            obj = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        validation = obj.get("validation") or {}
+        # Only count it as a failure when the tool returned an error OR
+        # validation explicitly reports ok=false.
+        is_failure = bool(obj.get("error")) and validation.get("ok") is False
+        if not is_failure:
+            continue
+        call_id = getattr(msg, "tool_call_id", None)
+        meta = pending_calls.get(call_id) or {"tool": name, "title": "(untitled)"}
+        title = str(meta["title"])[:80]
+        key = f"{meta['tool']}::{title}"
+        if key in failures:
+            failures[key]["attempt_count"] += 1
+            failures[key]["reason"] = validation.get(
+                "reason", failures[key].get("reason", "validation failed")
+            )
+        else:
+            failures[key] = {
+                "tool": meta["tool"],
+                "title": title,
+                "reason": validation.get("reason", "validation failed"),
+                "attempt_count": 1,
+            }
+
+    return list(failures.values())
 
 
 def _format_thread_for_proxy(messages: list[Any]) -> str:
@@ -143,12 +221,29 @@ async def run_user_proxy_decision(
         if not selected_datasets
         else ", ".join(selected_datasets)
     )
+    failures = _detect_validation_failures(thread_messages)
+    failure_lines: list[str] = []
+    if failures:
+        failure_lines.append("## Recent widget validation failures")
+        failure_lines.append(
+            "These create_react_* calls returned empty/all-null/all-zero data. "
+            "If attempt_count >= 2, instruct the assistant to **skip the metric** "
+            "instead of retrying. Otherwise, instruct it to rewrite the SQL with "
+            "different filters/aggregation or pick a different metric."
+        )
+        for f in failures:
+            failure_lines.append(
+                f"- {f['tool']} title={f['title']!r} attempts={f['attempt_count']} reason={f['reason']!r}"
+            )
+        failure_lines.append("")
+
     meta_lines = [
         "## User intent (fixed)",
         f"- Dashboard name: {magic_dashboard_name or '(not specified)'}",
         f"- Dataset scope: {scope}",
         f"- High-level goal: {magic_goal or '(not specified)'}",
         "",
+        *failure_lines,
         "## Conversation",
         transcript,
     ]

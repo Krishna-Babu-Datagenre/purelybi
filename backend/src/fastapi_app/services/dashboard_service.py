@@ -908,6 +908,75 @@ def delete_dashboard(user_id: str, dashboard_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Update a widget
+# ---------------------------------------------------------------------------
+
+
+def update_widget_in_dashboard(
+    user_id: str,
+    dashboard_id: str,
+    widget_id: str,
+    *,
+    title: str | None = None,
+    widget_type: str | None = None,
+    chart_config: dict[str, Any] | None = None,
+    data_config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Update one or more fields of a widget on a user-owned dashboard.
+
+    Returns the updated widget row, or ``None`` when the dashboard or widget
+    does not exist / is not owned by the user.
+    """
+    client = get_supabase_admin_client()
+
+    # Verify dashboard ownership
+    dash_rows = (
+        client.table("dashboards")
+        .select("id")
+        .eq("id", dashboard_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not dash_rows:
+        return None
+
+    # Verify widget belongs to this dashboard
+    widget_rows = (
+        client.table("widgets")
+        .select("id")
+        .eq("id", widget_id)
+        .eq("dashboard_id", dashboard_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not widget_rows:
+        return None
+
+    updates: dict[str, Any] = {}
+    if title is not None:
+        updates["title"] = title
+    if widget_type is not None:
+        updates["type"] = widget_type
+    if chart_config is not None:
+        updates["chart_config"] = chart_config
+    if data_config is not None:
+        updates["data_config"] = data_config
+
+    if not updates:
+        return widget_rows[0]
+
+    updated = (
+        client.table("widgets")
+        .update(updates)
+        .eq("id", widget_id)
+        .eq("dashboard_id", dashboard_id)
+        .execute()
+    ).data
+    return updated[0] if updated else None
+
+
+# ---------------------------------------------------------------------------
 # Delete a widget
 # ---------------------------------------------------------------------------
 

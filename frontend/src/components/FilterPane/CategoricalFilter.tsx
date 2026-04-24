@@ -12,10 +12,17 @@ import type { ColumnMetadata, CategoricalFilter as CatFilterType, ColumnRef } fr
 
 const CategoricalFilter = () => {
   const columns = useFilterStore((s) => s.columns);
-  const categoricalCols = useMemo(
-    () => columns.filter((c) => c.is_filterable && c.semantic_type === 'categorical'),
-    [columns],
-  );
+  const selectedSource = useFilterStore((s) => s.selectedSource);
+  const getSourceTableNames = useFilterStore((s) => s.getSourceTableNames);
+  const categoricalCols = useMemo(() => {
+    const sourceTables = getSourceTableNames();
+    return columns.filter(
+      (c) =>
+        c.is_filterable &&
+        c.semantic_type === 'categorical' &&
+        (!sourceTables || sourceTables.has(c.table_name)),
+    );
+  }, [columns, selectedSource, getSourceTableNames]);
   const columnValues = useFilterStore((s) => s.columnValues);
   const columnValuesLoading = useFilterStore((s) => s.columnValuesLoading);
   const fetchColumnValues = useFilterStore((s) => s.fetchColumnValues);
@@ -26,9 +33,11 @@ const CategoricalFilter = () => {
 
   const [selectedColKey, setSelectedColKey] = useState<string | null>(null);
   const [colPickerOpen, setColPickerOpen] = useState(false);
+  const [colSearch, setColSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedValues, setSelectedValues] = useState<Set<string | number | boolean>>(new Set());
   const searchRef = useRef<HTMLInputElement>(null);
+  const colSearchRef = useRef<HTMLInputElement>(null);
 
   // Group columns by table for the dropdown
   const columnsByTable = useMemo(() => {
@@ -71,6 +80,29 @@ const CategoricalFilter = () => {
     }
   }, [selectedCol]);
 
+  // Focus column search when picker opens
+  useEffect(() => {
+    if (colPickerOpen && colSearchRef.current) {
+      colSearchRef.current.focus();
+    }
+  }, [colPickerOpen]);
+
+  // Filter column groups by search
+  const filteredColumnsByTable = useMemo(() => {
+    if (!colSearch) return columnsByTable;
+    const q = colSearch.toLowerCase();
+    const result = new Map<string, ColumnMetadata[]>();
+    for (const [table, cols] of columnsByTable) {
+      const filtered = cols.filter(
+        (c) =>
+          c.column_name.toLowerCase().includes(q) ||
+          table.toLowerCase().includes(q),
+      );
+      if (filtered.length > 0) result.set(table, filtered);
+    }
+    return result;
+  }, [columnsByTable, colSearch]);
+
   const valuesKey = selectedCol ? `${selectedCol.table_name}.${selectedCol.column_name}` : '';
   const availableValues = columnValues[valuesKey] ?? [];
   const isLoading = columnValuesLoading[valuesKey] ?? false;
@@ -84,6 +116,7 @@ const CategoricalFilter = () => {
   const handleSelectColumn = useCallback((table: string, column: string) => {
     setSelectedColKey(`${table}.${column}`);
     setColPickerOpen(false);
+    setColSearch('');
     setSearchQuery('');
     setSelectedValues(new Set());
   }, []);
@@ -185,7 +218,20 @@ const CategoricalFilter = () => {
 
         {colPickerOpen && (
           <div className="filter-dropdown filter-dropdown--wide">
-            {Array.from(columnsByTable.entries()).map(([table, cols]) => (
+            {categoricalCols.length > 5 && (
+              <div className="filter-dropdown__search">
+                <Search size={12} className="text-[var(--text-muted)]" />
+                <input
+                  ref={colSearchRef}
+                  type="text"
+                  value={colSearch}
+                  onChange={(e) => setColSearch(e.target.value)}
+                  placeholder="Search columns…"
+                  className="filter-dropdown__search-input"
+                />
+              </div>
+            )}
+            {Array.from(filteredColumnsByTable.entries()).map(([table, cols]) => (
               <div key={table}>
                 <div className="filter-dropdown__group">{table}</div>
                 {cols.map((c) => (
@@ -209,6 +255,9 @@ const CategoricalFilter = () => {
                 ))}
               </div>
             ))}
+            {filteredColumnsByTable.size === 0 && (
+              <p className="filter-empty-hint" style={{ padding: '0.5rem' }}>No matching columns</p>
+            )}
           </div>
         )}
       </div>
