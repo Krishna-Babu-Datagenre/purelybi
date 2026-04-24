@@ -22,6 +22,34 @@ from fastapi_app.utils.supabase_client import get_supabase_admin_client
 logger = logging.getLogger(__name__)
 
 
+def _load_relationships_for_tenant(
+    tenant_id: str | None,
+) -> list[dict[str, Any]] | None:
+    """Load tenant relationship edges once per request for filter BFS.
+
+    Returns ``None`` when no tenant is provided or metadata is unavailable,
+    which the filter engine treats as an empty graph (direct-only filters).
+    """
+    if not tenant_id:
+        return None
+    try:
+        from fastapi_app.services import metadata_service  # local import (cycle safety)
+        rows = metadata_service.list_relationships(user_id=tenant_id)
+    except Exception:
+        logger.exception("Failed to load tenant relationships for %s", tenant_id)
+        return None
+    return [
+        {
+            "from_table": r.from_table,
+            "from_column": r.from_column,
+            "to_table": r.to_table,
+            "to_column": r.to_column,
+            "kind": r.kind.value if hasattr(r.kind, "value") else str(r.kind),
+        }
+        for r in rows
+    ]
+
+
 def _widgets_for_hydration_from_template(
     template_widgets: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -246,6 +274,8 @@ def build_live_template_dashboard(
     filters: list[dict[str, Any]] | None = None,
     force_refresh: bool = False,
     filters_from_preset: str | None = None,
+    filter_spec: Any | None = None,
+    relationships: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Hydrate a dashboard template for direct viewing (no ``widgets`` table rows)."""
     widgets_in = _widgets_for_hydration_from_template(tmpl.get("widgets") or [])
@@ -255,6 +285,8 @@ def build_live_template_dashboard(
         force_refresh=force_refresh,
         filters=filters,
         filters_from_preset=filters_from_preset,
+        filter_spec=filter_spec,
+        relationships=relationships,
     )
     return {
         "id": tmpl["id"],
@@ -714,6 +746,7 @@ def get_user_dashboard(
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
     hydrate: bool = True,
+    filter_spec: Any | None = None,
 ) -> dict[str, Any] | None:
     """Return a dashboard with its widgets, or ``None`` if not found / not owned.
 
@@ -721,6 +754,10 @@ def get_user_dashboard(
     (``chart_config`` from DB, no DuckDB queries). This is instant and useful
     for a first render; the caller can request ``hydrate=True`` in a follow-up
     to get live data.
+
+    *filter_spec* (native dashboard filtering, Group D) is applied to every
+    widget via the filter engine. Relationships are loaded once per request
+    so the filter engine can reroute filters through foreign keys.
     """
     client = get_supabase_admin_client()
 
@@ -737,11 +774,16 @@ def get_user_dashboard(
         # Resolve built-in template UUID → live hydrated template (no user row).
         tmpl = get_template_by_id(dashboard_id)
         if tmpl:
+            relationships = (
+                _load_relationships_for_tenant(user_id) if hydrate else None
+            )
             return build_live_template_dashboard(
                 tmpl,
                 tenant_id=user_id,
                 filters=filters if hydrate else None,
                 filters_from_preset=filters_from_preset if hydrate else None,
+                filter_spec=filter_spec if hydrate else None,
+                relationships=relationships,
             )
         return None
 
@@ -760,11 +802,14 @@ def get_user_dashboard(
         return dashboard
 
     # Hydrate widgets with live DuckDB data
+    relationships = _load_relationships_for_tenant(user_id)
     hydrated = hydrate_widgets(
         widgets,
         tenant_id=user_id,
         filters=filters,
         filters_from_preset=filters_from_preset,
+        filter_spec=filter_spec,
+        relationships=relationships,
     )
     dashboard["widgets"] = hydrated
     return dashboard
@@ -780,6 +825,7 @@ def refresh_dashboard(
     dashboard_id: str,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
+    filter_spec: Any | None = None,
 ) -> dict[str, Any] | None:
     """Force-refresh all widget data for a dashboard, ignoring cache."""
     client = get_supabase_admin_client()
@@ -796,12 +842,15 @@ def refresh_dashboard(
     if not rows:
         tmpl = get_template_by_id(dashboard_id)
         if tmpl:
+            relationships = _load_relationships_for_tenant(user_id)
             return build_live_template_dashboard(
                 tmpl,
                 tenant_id=user_id,
                 filters=filters,
                 force_refresh=True,
                 filters_from_preset=filters_from_preset,
+                filter_spec=filter_spec,
+                relationships=relationships,
             )
         return None
 
@@ -815,12 +864,15 @@ def refresh_dashboard(
         .execute()
     ).data or []
 
+    relationships = _load_relationships_for_tenant(user_id)
     hydrated = hydrate_widgets(
         widgets,
         tenant_id=user_id,
         force_refresh=True,
         filters=filters,
         filters_from_preset=filters_from_preset,
+        filter_spec=filter_spec,
+        relationships=relationships,
     )
     dashboard["widgets"] = hydrated
     return dashboard

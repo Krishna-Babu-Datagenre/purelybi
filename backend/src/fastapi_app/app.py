@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from fastapi_app.middleware.request_id import RequestIdMiddleware
-from fastapi_app.routers import agent, auth, chat, connectors, dashboards, onboarding, templates
+from fastapi_app.routers import agent, auth, chat, connectors, dashboards, metadata, onboarding, templates
 from fastapi_app.settings import LOG_LEVEL
 
 _LEVEL = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
@@ -68,6 +68,10 @@ _TAGS = [
     {
         "name": "agent",
         "description": "SQL agent backend status and capability flags.",
+    },
+    {
+        "name": "metadata",
+        "description": "LLM-generated semantic metadata used by native dashboard filtering.",
     },
 ]
 
@@ -187,6 +191,7 @@ app.include_router(chat.router)
 app.include_router(connectors.router)
 app.include_router(onboarding.router)
 app.include_router(agent.router)
+app.include_router(metadata.router)
 
 
 @app.get("/health")

@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from fastapi_app.models.auth import UserProfile
+from fastapi_app.models.filters import FilterSpec
 from fastapi_app.services.dashboard_service import (
     add_widget_to_dashboard,
     create_dashboard,
@@ -120,7 +121,14 @@ class AddWidgetRequest(BaseModel):
 
 
 class DashboardFilterRequest(BaseModel):
-    """Body for fetching a dashboard with arbitrary data filters."""
+    """Body for fetching a dashboard with arbitrary data filters.
+
+    Backward compatible: legacy callers pass only ``filters`` (list of
+    ``{column, op, value}`` dicts). Group D callers add ``filter_spec``
+    for native dashboard filtering, plus optional ``preset`` /
+    ``start_date`` / ``end_date`` so the same endpoint can apply both
+    date ranges and cross-table predicates in a single request.
+    """
 
     filters: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -128,6 +136,27 @@ class DashboardFilterRequest(BaseModel):
             "Filter objects: {column, op, value}. "
             "Ops: eq, neq, in, not_in, gt, gte, lt, lte, between."
         ),
+    )
+    filter_spec: FilterSpec | None = Field(
+        default=None,
+        description=(
+            "Native dashboard FilterSpec (time + categorical + numeric). "
+            "Applied via the filter engine in widget_data_service."
+        ),
+    )
+    preset: str | None = Field(
+        default=None,
+        description="Optional date preset, e.g. 'last_7_days'.",
+    )
+    start_date: str | None = Field(
+        default=None, description="Optional custom start date (ISO)."
+    )
+    end_date: str | None = Field(
+        default=None, description="Optional custom end date (ISO, exclusive)."
+    )
+    force_refresh: bool = Field(
+        default=False,
+        description="Ignore the preset-filter cache when True.",
     )
 
 
@@ -409,15 +438,46 @@ def get_filtered_dashboard(
 ):
     """Return a dashboard with arbitrary data filters applied.
 
-    Accepts a list of filter objects in the request body for category,
-    numeric, and date filtering.  Widgets whose source table does not
-    contain the filtered column are returned unfiltered.
+    Accepts either the legacy list of ``{column, op, value}`` filter dicts
+    (date ranges, single-table categorical) **and/or** a native
+    ``filter_spec`` (Group D). When ``preset`` / ``start_date`` /
+    ``end_date`` are provided in the body, they produce date filters the
+    same way the ``GET /{dashboard_id}`` endpoint does via query params.
+
+    Widgets whose source table does not contain a filtered column are
+    returned unfiltered (skipped filters are logged per widget).
     """
-    dashboard = get_user_dashboard(
-        user_id=user.id,
-        dashboard_id=dashboard_id,
-        filters=body.filters or None,
-    )
+    try:
+        preset_filters, preset_key = build_date_filters_from_params(
+            body.preset, body.start_date, body.end_date, tenant_id=user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Merge legacy body.filters (already column/op/value dicts) with any
+    # preset-generated ones; preset filters take precedence for `between`.
+    merged_filters: list[dict[str, Any]] | None = None
+    if body.filters and preset_filters:
+        merged_filters = [*body.filters, *preset_filters]
+    else:
+        merged_filters = body.filters or preset_filters or None
+
+    if body.force_refresh:
+        dashboard = refresh_dashboard(
+            user_id=user.id,
+            dashboard_id=dashboard_id,
+            filters=merged_filters,
+            filters_from_preset=preset_key,
+            filter_spec=body.filter_spec,
+        )
+    else:
+        dashboard = get_user_dashboard(
+            user_id=user.id,
+            dashboard_id=dashboard_id,
+            filters=merged_filters,
+            filters_from_preset=preset_key,
+            filter_spec=body.filter_spec,
+        )
     if dashboard is None:
         raise HTTPException(
             status_code=404,

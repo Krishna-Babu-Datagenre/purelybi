@@ -12,8 +12,11 @@ preset date ranges; no widget data is stored in Supabase.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timezone
 from typing import Any
@@ -21,6 +24,9 @@ from typing import Any
 import duckdb
 
 from ai.agents.sql.duckdb_sandbox import create_tenant_sandbox, get_tenant_sandbox
+from fastapi_app.models.filters import FilterSpec
+from fastapi_app.services import metadata_service
+from fastapi_app.services.filter_engine import apply_filters
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +36,26 @@ _LEGACY_DATE_CALL = re.compile(r"\bDATE\s*\(\s*([^)]+?)\s*\)", re.IGNORECASE)
 # TTL for in-process preset-filter cache (preset key → chart_config dict).
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
-# In-memory cache for preset-filtered widget hydration (key: widget id + preset).
+# In-memory cache for preset-filtered widget hydration (key: widget id + preset + filter_spec hash).
 # Custom date ranges never use this cache.
-_PRESET_FILTER_CACHE: dict[tuple[str, str], tuple[dict[str, Any], datetime]] = {}
+_PRESET_FILTER_CACHE: dict[tuple[str, str, str], tuple[dict[str, Any], datetime]] = {}
 _PRESET_CACHE_MAX_ENTRIES = 4000
+
+
+def _hash_filter_spec(filter_spec: FilterSpec | None) -> str:
+    """Stable 16-char digest of *filter_spec* for use in cache keys.
+
+    Empty / ``None`` specs collapse to the sentinel ``"none"``. Dict
+    serialisation uses ``sort_keys`` so equivalent specs share a key.
+    """
+    if filter_spec is None or filter_spec.is_empty():
+        return "none"
+    try:
+        payload = filter_spec.model_dump(mode="json", exclude_none=True)
+        raw = json.dumps(payload, sort_keys=True, default=str)
+    except Exception:
+        raw = repr(filter_spec)
+    return hashlib.blake2b(raw.encode("utf-8"), digest_size=8).hexdigest()
 
 # Tables that are allowed in auto-generated KPI SQL (not free-form queries).
 _ALLOWED_TABLES = frozenset(
@@ -45,6 +67,16 @@ _ALLOWED_TABLES = frozenset(
         "meta_adset_insights",
     }
 )
+
+# ---------------------------------------------------------------------------
+# Legacy hardcoded allowlists (Group C6 compatibility shim)
+#
+# These used to be the single source of truth for which columns a dashboard
+# could filter on. They now serve as a FALLBACK for tenants that have not
+# yet run the metadata-generator job. When ``tenant_column_metadata`` has
+# any rows for a tenant, those drive ``_resolve_allowed_filters`` and this
+# constant is ignored. Safe to delete once all tenants have metadata.
+# ---------------------------------------------------------------------------
 
 # Default date column per table (only tables with a time-series axis).
 _DATE_COLUMNS: dict[str, str] = {
@@ -115,6 +147,69 @@ _FILTER_OPS = frozenset(
     }
 )
 
+
+# ---------------------------------------------------------------------------
+# Metadata-backed allowlist resolvers (Group C6)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_allowed_filters(
+    tenant_id: str | None,
+    table: str,
+) -> frozenset[str]:
+    """Return the set of filterable columns for *table*.
+
+    Prefers the tenant's ``tenant_column_metadata`` (``is_filterable = TRUE``
+    on non-identifier semantic types). Falls back to the hardcoded legacy
+    allowlist when the tenant has no metadata yet, or when a metadata lookup
+    fails (logged, not raised — we never want dashboard hydration to hard-
+    fail because Supabase is transiently unreachable).
+    """
+    if tenant_id:
+        try:
+            tenant_map = metadata_service.get_filterable_columns_map(
+                user_id=tenant_id
+            )
+        except Exception:
+            logger.exception(
+                "Failed to load filterable columns for tenant=%s table=%s; "
+                "falling back to legacy allowlist.",
+                tenant_id,
+                table,
+            )
+            tenant_map = {}
+        if tenant_map:
+            return tenant_map.get(table, frozenset())
+    return _ALLOWED_FILTERS.get(table, frozenset())
+
+
+def _resolve_source_is_filterable(
+    tenant_id: str | None,
+    source: str,
+) -> bool:
+    """Return True if *source* has any filterable columns for this tenant."""
+    return bool(_resolve_allowed_filters(tenant_id, source))
+
+
+def _resolve_date_columns(tenant_id: str | None) -> dict[str, str]:
+    """Return ``{table: primary_date_column}`` for the tenant (metadata-driven).
+
+    Falls back to :data:`_DATE_COLUMNS` when no metadata is present.
+    """
+    if tenant_id:
+        try:
+            tenant_map = metadata_service.get_date_columns_map(user_id=tenant_id)
+        except Exception:
+            logger.exception(
+                "Failed to load date columns for tenant=%s; "
+                "falling back to legacy _DATE_COLUMNS.",
+                tenant_id,
+            )
+            tenant_map = {}
+        if tenant_map:
+            return tenant_map
+    return dict(_DATE_COLUMNS)
+
 # ---------------------------------------------------------------------------
 # DuckDB helpers
 # ---------------------------------------------------------------------------
@@ -147,6 +242,53 @@ def _query_db(
     return rows
 
 
+def _apply_native_filter_spec(
+    conn: duckdb.DuckDBPyConnection,
+    query: str,
+    params: tuple | list,
+    filter_spec: FilterSpec | None,
+    relationships: list[dict] | None,
+    *,
+    widget_id: Any = None,
+) -> tuple[str, tuple]:
+    """Wrap *query* with filters from *filter_spec* (Group C path).
+
+    Returns ``(rewritten_query, params_tuple)``. When *filter_spec* is
+    ``None`` or empty, the original ``(query, params)`` are returned
+    untouched. Skipped filters are logged for observability.
+    """
+    if filter_spec is None or filter_spec.is_empty():
+        return query, tuple(params or ())
+    t0 = time.perf_counter()
+    try:
+        new_sql, new_params, application = apply_filters(
+            query,
+            spec=filter_spec,
+            conn=conn,
+            relationships=relationships,
+            existing_params=params,
+        )
+    except Exception:
+        logger.exception(
+            "Filter injection failed for widget %s; running original SQL.",
+            widget_id,
+        )
+        return query, tuple(params or ())
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    if application is not None:
+        applied_tables = sorted({p.table for p in application.plans})
+        skipped = application.skipped or []
+        logger.info(
+            "event=filter_apply widget=%s tables_applied=%s skipped=%s skip_count=%d latency_ms=%.1f",
+            widget_id,
+            applied_tables,
+            skipped,
+            len(skipped),
+            elapsed_ms,
+        )
+    return new_sql, tuple(new_params)
+
+
 def _is_ts_within_ttl(ts: datetime) -> bool:
     try:
         if ts.tzinfo is None:
@@ -172,19 +314,25 @@ def _maybe_prune_preset_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get_latest_data_date(conn: duckdb.DuckDBPyConnection):
+def _get_latest_data_date(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    tenant_id: str | None = None,
+):
     """Return the most recent date found across all time-series tables.
 
-    Falls back to ``date.today()`` if the database cannot be queried.
+    Falls back to ``date.today()`` if the database cannot be queried. Uses
+    the metadata-driven date-column map when *tenant_id* is supplied so new
+    tenant tables are picked up automatically; otherwise falls back to the
+    legacy hardcoded list.
     """
-    _DATE_QUERIES = [
-        "SELECT MAX(created_at) AS max_date FROM shopify_orders",
-        "SELECT MAX(date) AS max_date FROM meta_daily_insights",
-    ]
+    date_map = _resolve_date_columns(tenant_id)
     latest = None
-    for q in _DATE_QUERIES:
+    for table, col in date_map.items():
+        if not (_is_safe_identifier(table) and _is_safe_identifier(col)):
+            continue
         try:
-            rows = _query_db(conn, q)
+            rows = _query_db(conn, f"SELECT MAX({col}) AS max_date FROM {table}")
             if rows and rows[0].get("max_date"):
                 d = date.fromisoformat(str(rows[0]["max_date"])[:10])
                 if latest is None or d > latest:
@@ -209,7 +357,7 @@ def get_max_data_date_iso(tenant_id: str) -> str:
         if age >= 0 and age < _MAX_DATA_DATE_CACHE_TTL_SECONDS:
             return value
     conn, _ = get_tenant_sandbox(tenant_id)
-    iso = _get_latest_data_date(conn).isoformat()
+    iso = _get_latest_data_date(conn, tenant_id=tenant_id).isoformat()
     _MAX_DATA_DATE_ISO_CACHE[tenant_id] = (iso, now)
     return iso
 
@@ -230,17 +378,18 @@ def build_date_filters_from_params(
     *tenant_id* scopes preset ranges to the latest date in that user's data;
     if omitted, presets anchor to today's date (degraded behaviour).
     """
+    date_cols = set(_resolve_date_columns(tenant_id).values())
     if preset:
         start, end = resolve_date_preset(preset, tenant_id=tenant_id)
         flist = [
             {"column": col, "op": "between", "value": [start, end]}
-            for col in set(_DATE_COLUMNS.values())
+            for col in date_cols
         ]
         return flist, preset
     if start_date and end_date:
         flist = [
             {"column": col, "op": "between", "value": [start_date, end_date]}
-            for col in set(_DATE_COLUMNS.values())
+            for col in date_cols
         ]
         return flist, None
     return None, None
@@ -283,14 +432,17 @@ def resolve_date_preset(
 def _build_filter_clause(
     filters: list[dict[str, Any]],
     table: str,
+    *,
+    tenant_id: str | None = None,
 ) -> tuple[str, list]:
     """Build ``(clause, params)`` from a list of generic filter dicts.
 
-    Only columns in ``_ALLOWED_FILTERS[table]`` are accepted; unknown
-    columns or operators are silently skipped.  The returned *clause*
-    does **not** include the ``WHERE`` keyword.
+    Only columns in the tenant's metadata-driven allowlist (see
+    :func:`_resolve_allowed_filters`) are accepted; unknown columns or
+    operators are silently skipped. The returned *clause* does **not**
+    include the ``WHERE`` keyword.
     """
-    allowed = _ALLOWED_FILTERS.get(table, frozenset())
+    allowed = _resolve_allowed_filters(tenant_id, table)
     parts: list[str] = []
     params: list[Any] = []
 
@@ -410,6 +562,11 @@ def _execute_kpi_aggregation(
     conn: duckdb.DuckDBPyConnection,
     data_config: dict,
     filters: list[dict[str, Any]] | None = None,
+    *,
+    filter_spec: FilterSpec | None = None,
+    relationships: list[dict] | None = None,
+    widget_id: Any = None,
+    tenant_id: str | None = None,
 ) -> float | None:
     """Run a single-table KPI aggregation and return the scalar, or None."""
     source = data_config.get("source", "")
@@ -435,10 +592,14 @@ def _execute_kpi_aggregation(
 
     params: tuple = ()
     if filters:
-        clause, p = _build_filter_clause(filters, source)
+        clause, p = _build_filter_clause(filters, source, tenant_id=tenant_id)
         if clause:
             sql += f" WHERE {clause}"
             params = tuple(p)
+
+    sql, params = _apply_native_filter_spec(
+        conn, sql, params, filter_spec, relationships, widget_id=widget_id
+    )
 
     rows = _query_db(conn, sql, params)
     if not rows:
@@ -457,6 +618,11 @@ def _hydrate_kpi_components(
     chart_config: dict,
     data_config: dict,
     filters: list[dict[str, Any]] | None = None,
+    *,
+    filter_spec: FilterSpec | None = None,
+    relationships: list[dict] | None = None,
+    widget_id: Any = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Combine multiple table-level KPI parts (set, subtract, divide)."""
     components: list[dict[str, Any]] = data_config.get("components") or []
@@ -466,7 +632,15 @@ def _hydrate_kpi_components(
     value: float | None = None
     for comp in components:
         op = (comp.get("op") or "set").lower()
-        part = _execute_kpi_aggregation(conn, comp, filters)
+        part = _execute_kpi_aggregation(
+            conn,
+            comp,
+            filters,
+            filter_spec=filter_spec,
+            relationships=relationships,
+            widget_id=widget_id,
+            tenant_id=tenant_id,
+        )
         if part is None:
             part = 0.0
 
@@ -494,6 +668,11 @@ def _hydrate_kpi_from_query(
     chart_config: dict,
     data_config: dict,
     filters: list[dict[str, Any]] | None = None,
+    *,
+    filter_spec: FilterSpec | None = None,
+    relationships: list[dict] | None = None,
+    widget_id: Any = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Run an arbitrary SQL query for a KPI widget and update chart_config['value'].
 
@@ -510,8 +689,8 @@ def _hydrate_kpi_from_query(
     params: tuple = ()
     if filters:
         source = data_config.get("source", "")
-        if source and source in _ALLOWED_FILTERS:
-            clause, p = _build_filter_clause(filters, source)
+        if source and _resolve_source_is_filterable(tenant_id, source):
+            clause, p = _build_filter_clause(filters, source, tenant_id=tenant_id)
             if clause:
                 query, p = _inject_where(query, clause, p)
                 params = tuple(p)
@@ -532,10 +711,14 @@ def _hydrate_kpi_from_query(
                     f" WHERE {value_col} IS NOT NULL"
                 )
                 # Wrap and apply generic date filter on the outer query
-                for col_name in set(_DATE_COLUMNS.values()):
+                for col_name in set(_resolve_date_columns(tenant_id).values()):
                     if _is_safe_identifier(col_name):
                         query += f" AND {col_name} >= ? AND {col_name} < ?"
                         params = params + tuple(between_val)
+
+    query, params = _apply_native_filter_spec(
+        conn, query, params, filter_spec, relationships, widget_id=widget_id
+    )
 
     try:
         rows = _query_db(conn, query, params)
@@ -558,16 +741,47 @@ def _hydrate_kpi(
     chart_config: dict,
     data_config: dict,
     filters: list[dict[str, Any]] | None = None,
+    *,
+    filter_spec: FilterSpec | None = None,
+    relationships: list[dict] | None = None,
+    widget_id: Any = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Build and run a KPI aggregation query, set chart_config['value']."""
     if data_config.get("components"):
-        return _hydrate_kpi_components(conn, chart_config, data_config, filters)
+        return _hydrate_kpi_components(
+            conn,
+            chart_config,
+            data_config,
+            filters,
+            filter_spec=filter_spec,
+            relationships=relationships,
+            widget_id=widget_id,
+            tenant_id=tenant_id,
+        )
 
     # Agent-generated KPIs carry a raw SQL query instead of structured aggregation
     if data_config.get("query") and data_config.get("kpi_value_column"):
-        return _hydrate_kpi_from_query(conn, chart_config, data_config, filters)
+        return _hydrate_kpi_from_query(
+            conn,
+            chart_config,
+            data_config,
+            filters,
+            filter_spec=filter_spec,
+            relationships=relationships,
+            widget_id=widget_id,
+            tenant_id=tenant_id,
+        )
 
-    val = _execute_kpi_aggregation(conn, data_config, filters)
+    val = _execute_kpi_aggregation(
+        conn,
+        data_config,
+        filters,
+        filter_spec=filter_spec,
+        relationships=relationships,
+        widget_id=widget_id,
+        tenant_id=tenant_id,
+    )
     chart_config["value"] = round(val, 2) if val is not None else 0
 
     return chart_config
@@ -583,6 +797,11 @@ def _hydrate_chart(
     chart_config: dict,
     data_config: dict,
     filters: list[dict[str, Any]] | None = None,
+    *,
+    filter_spec: FilterSpec | None = None,
+    relationships: list[dict] | None = None,
+    widget_id: Any = None,
+    tenant_id: str | None = None,
 ) -> dict:
     """Execute the chart query and map results into chart_config."""
     query = data_config.get("query")
@@ -601,9 +820,9 @@ def _hydrate_chart(
     params: tuple = ()
     if filters:
         source = data_config.get("source", "")
-        if source and source in _ALLOWED_FILTERS:
+        if source and _resolve_source_is_filterable(tenant_id, source):
             # Single-source query: inject WHERE directly.
-            clause, p = _build_filter_clause(filters, source)
+            clause, p = _build_filter_clause(filters, source, tenant_id=tenant_id)
             if clause:
                 query, p = _inject_where(query, clause, p)
                 params = tuple(p)
@@ -628,6 +847,10 @@ def _hydrate_chart(
                         f" WHERE {xaxis_field} >= ? AND {xaxis_field} < ?"
                     )
                     params = tuple(between_val)
+
+    query, params = _apply_native_filter_spec(
+        conn, query, params, filter_spec, relationships, widget_id=widget_id
+    )
 
     logger.debug("_hydrate_chart final query: %s | params: %s", query, params)
     rows = _query_db(conn, query, params)
@@ -716,6 +939,8 @@ def hydrate_widget(
     force_refresh: bool = False,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
+    filter_spec: FilterSpec | None = None,
+    relationships: list[dict] | None = None,
 ) -> dict:
     """Populate a widget's ``chart_config`` with live data.
 
@@ -728,6 +953,10 @@ def hydrate_widget(
     When *filters* come from a date *preset* (*filters_from_preset* set),
     results are served from an in-process TTL cache. Custom date ranges
     always run a fresh query.
+
+    *filter_spec* (Group C native filtering) and *relationships* are passed
+    through to the inner hydrators so widget SQL is rewritten with the
+    appropriate per-table predicates before execution.
     """
     data_config = widget.get("data_config")
     if not data_config:
@@ -739,9 +968,20 @@ def hydrate_widget(
     if force_refresh and wid_str:
         _clear_preset_cache_for_widget(wid_str)
 
+    has_native_spec = filter_spec is not None and not filter_spec.is_empty()
+    spec_hash = _hash_filter_spec(filter_spec)
+
     # ---- preset filter: in-memory TTL cache (not used for custom ranges) ----
-    if filters and filters_from_preset and wid_str and not force_refresh:
-        key = (wid_str, filters_from_preset)
+    # The preset cache key is (widget_id, preset, filter_spec_hash) so that
+    # distinct filter_spec payloads cache independently; absent specs share
+    # the ``"none"`` bucket.
+    if (
+        filters
+        and filters_from_preset
+        and wid_str
+        and not force_refresh
+    ):
+        key = (wid_str, filters_from_preset, spec_hash)
         entry = _PRESET_FILTER_CACHE.get(key)
         if entry:
             cached_chart, ts = entry
@@ -761,8 +1001,26 @@ def hydrate_widget(
 
     def _run(c: duckdb.DuckDBPyConnection) -> dict:
         if widget.get("type") == "kpi":
-            return _hydrate_kpi(c, chart_config, data_config, filters)
-        return _hydrate_chart(c, chart_config, data_config, filters)
+            return _hydrate_kpi(
+                c,
+                chart_config,
+                data_config,
+                filters,
+                filter_spec=filter_spec,
+                relationships=relationships,
+                widget_id=wid,
+                tenant_id=tenant_id,
+            )
+        return _hydrate_chart(
+            c,
+            chart_config,
+            data_config,
+            filters,
+            filter_spec=filter_spec,
+            relationships=relationships,
+            widget_id=wid,
+            tenant_id=tenant_id,
+        )
 
     try:
         if conn is not None:
@@ -776,8 +1034,12 @@ def hydrate_widget(
 
     widget["chart_config"] = chart_config
 
-    if filters and filters_from_preset and wid_str:
-        key = (wid_str, filters_from_preset)
+    if (
+        filters
+        and filters_from_preset
+        and wid_str
+    ):
+        key = (wid_str, filters_from_preset, spec_hash)
         _PRESET_FILTER_CACHE[key] = (copy.deepcopy(chart_config), datetime.now(timezone.utc))
         _maybe_prune_preset_cache()
 
@@ -791,6 +1053,8 @@ def hydrate_widgets(
     force_refresh: bool = False,
     filters: list[dict[str, Any]] | None = None,
     filters_from_preset: str | None = None,
+    filter_spec: FilterSpec | None = None,
+    relationships: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
     """Hydrate every widget in a list using one DuckDB connection when *tenant_id* is set.
 
@@ -807,6 +1071,8 @@ def hydrate_widgets(
                 force_refresh=force_refresh,
                 filters=filters,
                 filters_from_preset=filters_from_preset,
+                filter_spec=filter_spec,
+                relationships=relationships,
             )
             for w in widgets
         ]
@@ -823,6 +1089,8 @@ def hydrate_widgets(
                 force_refresh=force_refresh,
                 filters=filters,
                 filters_from_preset=filters_from_preset,
+                filter_spec=filter_spec,
+                relationships=relationships,
             )
             for w in widgets
         ]
@@ -838,6 +1106,8 @@ def hydrate_widgets(
             force_refresh=force_refresh,
             filters=filters,
             filters_from_preset=filters_from_preset,
+            filter_spec=filter_spec,
+            relationships=relationships,
         )
 
     max_workers = min(len(widgets), 8)

@@ -103,7 +103,8 @@ export type ShellPage =
   | 'alerts'
   | 'data-connect'
   | 'data-manage'
-  | 'data-raw-tables';
+  | 'data-raw-tables'
+  | 'metadata';
 
 /* ─────────────────────────────────────────────
    Store Interface

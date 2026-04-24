@@ -59,6 +59,46 @@
 
 ---
 
+## Native Filter Pane
+
+```
+1.  Dashboard open → user clicks filter icon (top bar, next to date filter)
+2.  Filter pane slides out from right
+3.  Metadata loads lazily: GET /api/metadata/tables + GET /api/metadata/columns
+4.  Time section: pick temporal column → select preset or custom date range
+5.  Categorical section: pick table/column → values load on-demand
+     GET /api/metadata/values?table=...&column=...
+     → checkbox multi-select + search
+6.  Numeric section: pick table/column → enter min/max
+7.  User clicks "Apply Filters"
+     POST /api/dashboards/{id}/filtered  { filter_spec: {...} }
+8.  Dashboard refreshes with filtered widget data
+9.  Active filter count badge on toggle button
+10. "Clear All" resets and refetches unfiltered dashboard
+```
+
+---
+
+## Metadata Review
+
+```
+1.  User navigates to Metadata page (sidebar → Database icon)
+2.  Page loads: GET /api/metadata/tables + columns + relationships
+3.  "Generate Metadata" button → POST /api/metadata/generate (202)
+4.  Poll GET /api/metadata/jobs/{id} every 3s until complete
+5.  Table tree: expand table → see columns with semantic type, description,
+    filterable toggle, cardinality
+6.  Click description to inline-edit → PATCH /api/metadata/columns/{t}/{c}
+7.  Click semantic badge to change type → select dropdown
+8.  Toggle filterable → immediate PATCH
+9.  Relationships tab: view from→to edges with kind + confidence
+10. Add relationship → fill form → POST /api/metadata/relationships
+11. Delete relationship → DELETE /api/metadata/relationships/{...}
+12. Rows with "Edited by user" badge are preserved on regeneration
+```
+
+---
+
 ## Adding Agent Charts to Dashboards
 
 ```

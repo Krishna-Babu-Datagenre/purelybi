@@ -33,6 +33,7 @@ dependencies = [
     "uvicorn>=0.34.0",
     "gunicorn>=22.0.0",
     "plotly>=6.6.0",
+    "sqlglot>=25.0.0",
 ]
 
 [dependency-groups]

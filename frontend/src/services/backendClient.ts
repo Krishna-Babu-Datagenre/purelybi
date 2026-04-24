@@ -163,6 +163,24 @@ export function getDashboardFiltered(
   );
 }
 
+/** POST /api/dashboards/{id}/filtered — apply a native FilterSpec to a dashboard */
+export function getDashboardFilteredWithSpec(
+  dashboardId: string,
+  filterSpec?: import('../types/metadata').FilterSpec,
+  options?: { forceRefresh?: boolean },
+): Promise<ApiDashboard> {
+  return request<ApiDashboard>(
+    `/api/dashboards/${encodeURIComponent(dashboardId)}/filtered`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        filter_spec: filterSpec ?? null,
+        force_refresh: options?.forceRefresh ?? false,
+      }),
+    },
+  );
+}
+
 /* ── Max data date (cached — endpoint can be slow; avoid refetch every navigation/refresh) ── */
 
 const MAX_DATA_DATE_STORAGE_KEY = 'bi-agent.maxDataDate.v1';

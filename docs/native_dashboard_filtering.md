@@ -237,65 +237,65 @@ matters; groups can overlap where noted.
 
 ### Group A — Metadata storage & API (backend)
 
-- [ ] **A1** — Supabase migration adding `tenant_table_metadata`, `tenant_column_metadata`, `tenant_table_relationships`, `tenant_metadata_jobs` under `backend/supabase/queries/`, including RLS policies.
-- [ ] **A2** — Pydantic models `TableMetadata`, `ColumnMetadata`, `Relationship`, `MetadataJob` in `fastapi_app/models/metadata.py`.
-- [ ] **A3** — `metadata_service.py` with CRUD against Supabase that preserves `edited_by_user` on upsert.
-- [ ] **A4** — Router `routers/metadata.py` exposing `GET/PATCH /metadata/tables`, `/metadata/columns`, `/metadata/relationships`, and `POST /metadata/generate`, using existing `auth_dep`.
-- [ ] **A5** — Unit tests for CRUD behavior and RLS scoping.
+- [x] **A1** — Supabase migration adding `tenant_table_metadata`, `tenant_column_metadata`, `tenant_table_relationships`, `tenant_metadata_jobs` under `backend/supabase/queries/`, including RLS policies.
+- [x] **A2** — Pydantic models `TableMetadata`, `ColumnMetadata`, `Relationship`, `MetadataJob` in `fastapi_app/models/metadata.py`.
+- [x] **A3** — `metadata_service.py` with CRUD against Supabase that preserves `edited_by_user` on upsert.
+- [x] **A4** — Router `routers/metadata.py` exposing `GET/PATCH /metadata/tables`, `/metadata/columns`, `/metadata/relationships`, and `POST /metadata/generate`, using existing `auth_dep`.
+- [x] **A5** — Unit tests for CRUD behavior and RLS scoping.
 
 ### Group B — Metadata generation job (ACA)
 
-- [ ] **B1** — Scaffold `azure-job-metadata-generator/` (Dockerfile, requirements, entrypoint) mirroring `docker-image/`.
-- [ ] **B2** — `inspect.py`: DuckDB schema + row samples + per-column cardinality.
-- [ ] **B3** — `llm_describe.py`: per-table description and per-column semantic type via `ai.llms` factory at temperature 0.
-- [ ] **B4** — `llm_relationships.py`: propose relationship edges and validate each with a DuckDB join probe.
-- [ ] **B5** — `upsert.py`: Supabase writes that respect `edited_by_user` and update `tenant_metadata_jobs` status.
-- [ ] **B6** — ACA job definition / `az containerapp job` provisioning script (documented in `docs/`), deployed to the sync-uploader resource group.
-- [ ] **B7** — Backend trigger: `POST /metadata/generate` starts the ACA job via SDK and returns `job_id`, mirroring the schema-updater pattern.
-- [ ] **B8** — Integration test running the job against a seeded tenant fixture.
+- [x] **B1** — Scaffold `azure-job-metadata-generator/` (Dockerfile, requirements, entrypoint) mirroring `docker-image/`.
+- [x] **B2** — `inspect.py`: DuckDB schema + row samples + per-column cardinality.
+- [x] **B3** — `llm_describe.py`: per-table description and per-column semantic type via `ai.llms` factory at temperature 0.
+- [x] **B4** — `llm_relationships.py`: propose relationship edges and validate each with a DuckDB join probe.
+- [x] **B5** — `upsert.py`: Supabase writes that respect `edited_by_user` and update `tenant_metadata_jobs` status.
+- [x] **B6** — ACA job definition / `az containerapp job` provisioning script (documented in `docs/`), deployed to the sync-uploader resource group.
+- [x] **B7** — Backend trigger: `POST /metadata/generate` starts the ACA job via SDK and returns `job_id`, mirroring the schema-updater pattern.
+- [x] **B8** — Integration test running the job against a seeded tenant fixture.
 
 ### Group C — Filter engine (backend)
 
-- [ ] **C1** — `FilterSpec` and sub-models in `models/filters.py` with strict validation.
-- [ ] **C2** — `filter_engine/detect_tables.py`: DuckDB `EXPLAIN (FORMAT JSON)` parser with `sqlglot` AST fallback, returning `set[str]`; unit tests over CTE, subquery, join, UNION samples.
-- [ ] **C3** — `filter_engine/relationships.py`: BFS over the relationship graph with direction safety rules.
-- [ ] **C4** — `filter_engine/build_views.py`: emit `CREATE OR REPLACE TEMP VIEW` statements with parameterized predicates.
-- [ ] **C5** — Integrate into `widget_data_service.hydrate_widget` so it accepts `filter_spec`, calls `build_views`, and executes widget SQL unchanged.
-- [ ] **C6** — Remove hardcoded `_ALLOWED_FILTERS` / `_DATE_COLUMNS`, replacing them with metadata lookups (keep a compatibility shim until the frontend migrates).
-- [ ] **C7** — Unit + integration tests against real DuckDB: direct filter, related-table filter, skipped filter, CTE widget.
-- [ ] **C8** — Perf check extending `tests/perf_benchmark.py` to confirm view creation is negligible vs. query time.
+- [x] **C1** — `FilterSpec` and sub-models in `models/filters.py` with strict validation.
+- [x] **C2** — `filter_engine/detect_tables.py`: DuckDB `EXPLAIN (FORMAT JSON)` parser with `sqlglot` AST fallback, returning `set[str]`; unit tests over CTE, subquery, join, UNION samples.
+- [x] **C3** — `filter_engine/relationships.py`: BFS over the relationship graph with direction safety rules.
+- [x] **C4** — `filter_engine/build_views.py`: emit `CREATE OR REPLACE TEMP VIEW` statements with parameterized predicates.  *(Implementation deviation: rewrites widget SQL via sqlglot to wrap each base-table reference in a filtered subquery — semantically equivalent to view shadowing but does not require mutating the shared sandbox or a `_raw.*` schema. Documented in module docstring.)*
+- [x] **C5** — Integrate into `widget_data_service.hydrate_widget` so it accepts `filter_spec`, calls `build_views`, and executes widget SQL unchanged.
+- [x] **C6** — Remove hardcoded `_ALLOWED_FILTERS` / `_DATE_COLUMNS`, replacing them with metadata lookups (keep a compatibility shim until the frontend migrates).
+- [x] **C7** — Unit + integration tests against real DuckDB: direct filter, related-table filter, skipped filter, CTE widget.
+- [x] **C8** — Perf check extending `backend/tests/perf_benchmark.py` to confirm view creation is negligible vs. query time.  *(Added `_bench_filter_engine` and `--filter-engine-only` flag. Offline 50k-row DuckDB microbenchmark: rewrite-only median ≈3 ms, end-to-end (rewrite + execute) ≈7 ms vs. 3 ms baseline — ≈3 ms absolute overhead, negligible against typical blob-backed widget query times. Report at `docs/benchmark_results/benchmark_filter_engine.md`.)*
 
 ### Group D — Dashboard hydration wiring
 
-- [ ] **D1** — Extend the dashboard hydrate endpoint payload to accept `filter_spec` (absent = no filters; backward compatible).
-- [ ] **D2** — Plumb `filter_spec` through `dashboard_service` → `widget_data_service`, building views once per request and reusing across widgets.
-- [ ] **D3** — Include a hash of `filter_spec` in the `_PRESET_FILTER_CACHE` key (custom ranges continue to skip cache).
-- [ ] **D4** — Telemetry: log applied and skipped filters per widget.
+- [x] **D1** — Extend the dashboard hydrate endpoint payload to accept `filter_spec` (absent = no filters; backward compatible). *(`DashboardFilterRequest` in `routers/dashboards.py` now carries `filter_spec`, `preset`, `start_date`, `end_date`, `force_refresh`. `POST /{dashboard_id}/filtered` applies both legacy column-dict filters and native `FilterSpec` in one call; existing callers passing only `filters` keep working unchanged.)*
+- [x] **D2** — Plumb `filter_spec` through `dashboard_service` → `widget_data_service`, building views once per request and reusing across widgets. *(`get_user_dashboard` and `refresh_dashboard` now accept `filter_spec`; `_load_relationships_for_tenant` loads `tenant_table_relationships` once per request and feeds `hydrate_widgets` — the same relationship list is reused across every widget inside the thread-pool.)*
+- [x] **D3** — Include a hash of `filter_spec` in the `_PRESET_FILTER_CACHE` key (custom ranges continue to skip cache). *(Key is now `(widget_id, preset, filter_spec_hash)` with `_hash_filter_spec()` producing a stable BLAKE2b-8 digest; `None`/empty specs collapse to `"none"`. Custom ranges still bypass the cache because `filters_from_preset` is `None`.)*
+- [x] **D4** — Telemetry: log applied and skipped filters per widget. *(`_apply_native_filter_spec` now emits `widget=<id> filters_applied=[tables] filters_skipped=[...]` at INFO on every hydration, regardless of success.)*
 
 ### Group E — Frontend: filter pane
 
-- [ ] **E1** — `services/metadataApi.ts`: typed client for metadata endpoints.
-- [ ] **E2** — `store/filterStore.ts`: store holding `FilterSpec` per dashboard.
-- [ ] **E3** — `components/FilterPane/TimeFilter.tsx`: presets + custom range picker.
-- [ ] **E4** — `components/FilterPane/CategoricalFilter.tsx`: table → column → multi-select; unique values fetched on demand via new `GET /metadata/values` endpoint (backed by DuckDB `SELECT DISTINCT ... LIMIT N`).
-- [ ] **E5** — `components/FilterPane/NumericFilter.tsx`: min/max inputs, optional slider for high-cardinality columns.
-- [ ] **E6** — `components/FilterPane/FilterPane.tsx`: orchestrator; "Apply" triggers dashboard re-hydrate with `filter_spec`.
+- [x] **E1** — `services/metadataApi.ts`: typed client for metadata endpoints.
+- [x] **E2** — `store/filterStore.ts`: store holding `FilterSpec` per dashboard.
+- [x] **E3** — `components/FilterPane/TimeFilter.tsx`: presets + custom range picker.
+- [x] **E4** — `components/FilterPane/CategoricalFilter.tsx`: table → column → multi-select; unique values fetched on demand via new `GET /metadata/values` endpoint (backed by DuckDB `SELECT DISTINCT ... LIMIT N`).
+- [x] **E5** — `components/FilterPane/NumericFilter.tsx`: min/max inputs, optional slider for high-cardinality columns.
+- [x] **E6** — `components/FilterPane/FilterPane.tsx`: orchestrator; "Apply" triggers dashboard re-hydrate with `filter_spec`.
 - [ ] **E7** — E2E test applying time, categorical, and numeric filters across a multi-widget dashboard.
 
 ### Group F — Frontend: metadata review UI
 
-- [ ] **F1** — "Generate metadata" button on the data sources page, disabled until at least one source has a successful sync.
-- [ ] **F2** — Job status toast / panel polling `tenant_metadata_jobs`.
-- [ ] **F3** — `MetadataReview` page: tree view (Tables → Columns) with inline edits for description, semantic_type, and is_filterable.
-- [ ] **F4** — Relationship editor: table-pair list with confidence plus edit/delete/add.
-- [ ] **F5** — "Edited by user" badge; regeneration confirms it will overwrite unedited rows only.
+- [x] **F1** — "Generate metadata" button on the data sources page, disabled until at least one source has a successful sync.
+- [x] **F2** — Job status toast / panel polling `tenant_metadata_jobs`.
+- [x] **F3** — `MetadataReview` page: tree view (Tables → Columns) with inline edits for description, semantic_type, and is_filterable.
+- [x] **F4** — Relationship editor: table-pair list with confidence plus edit/delete/add.
+- [x] **F5** — "Edited by user" badge; regeneration confirms it will overwrite unedited rows only.
 
 ### Group G — Observability & docs
 
-- [ ] **G1** — Structured log events for filter apply/skip and job lifecycle.
-- [ ] **G2** — Metrics for job duration, filter-apply latency, and widget-skip count.
-- [ ] **G3** — Update `backend/docs/fast_api/` with the new endpoints.
-- [ ] **G4** — Update `frontend/docs/ui_flows.md` with the filter and metadata flows.
+- [x] **G1** — Structured log events for filter apply/skip and job lifecycle.
+- [x] **G2** — Metrics for job duration, filter-apply latency, and widget-skip count.
+- [x] **G3** — Update `backend/docs/fast_api/` with the new endpoints.
+- [x] **G4** — Update `frontend/docs/ui_flows.md` with the filter and metadata flows.
 
 ---
 

@@ -350,6 +350,131 @@ def _write_markdown(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Filter-engine microbenchmark (offline, no HTTP, no auth)
+#
+# Group C8: confirm that rewriting widget SQL with a FilterSpec adds
+# negligible overhead compared to query execution. Runs entirely against an
+# in-memory DuckDB seeded with ~50k rows so results are deterministic.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _bench_filter_engine(passes: int) -> list[BenchResult]:
+    try:
+        import duckdb  # type: ignore[import]
+    except ImportError:
+        r = BenchResult(label="filter_engine (duckdb not installed)")
+        r.error = "duckdb not available"
+        return [r]
+
+    try:
+        from fastapi_app.models.filters import (  # type: ignore[import]
+            CategoricalFilter,
+            ColumnRef,
+            FilterSpec,
+            TimeFilter,
+            TimeRange,
+        )
+        from fastapi_app.services.filter_engine import apply_filters  # type: ignore[import]
+    except ImportError as exc:
+        r = BenchResult(label="filter_engine import error")
+        r.error = str(exc)
+        return [r]
+
+    # ── Seed: ~50k orders across 60 days, 5 payment gateways ─────────────
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE shopify_orders AS
+        SELECT
+            (TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (s % 60) DAY
+                + INTERVAL (s % 86400) SECOND) AS created_at,
+            (CASE (s % 5)
+                WHEN 0 THEN 'stripe' WHEN 1 THEN 'paypal'
+                WHEN 2 THEN 'amex'   WHEN 3 THEN 'cash'
+                ELSE 'other' END)                                AS payment_gateways,
+            (CASE (s % 3) WHEN 0 THEN 'paid'
+                           WHEN 1 THEN 'pending'
+                           ELSE 'cancelled' END)                 AS financial_status,
+            (10 + (s % 500) * 0.37)                              AS total_price
+        FROM range(0, 50000) t(s);
+        """
+    )
+
+    base_sql = (
+        "SELECT cast(created_at AS date) AS day, "
+        "       COUNT(*)          AS orders, "
+        "       SUM(total_price)  AS revenue "
+        "FROM shopify_orders "
+        "GROUP BY 1 ORDER BY 1"
+    )
+
+    spec = FilterSpec(
+        time=TimeFilter(
+            column_ref=ColumnRef(table="shopify_orders", column="created_at"),
+            range=TimeRange.model_validate({"from": "2026-01-15", "to": "2026-02-15"}),
+        ),
+        filters=[
+            CategoricalFilter(
+                column_ref=ColumnRef(
+                    table="shopify_orders", column="payment_gateways"
+                ),
+                values=["stripe", "paypal", "amex"],
+            )
+        ],
+    )
+
+    results: list[BenchResult] = []
+
+    # 1. Baseline: execute widget SQL with no filters.
+    r_base = BenchResult(label="[filter_engine] baseline query (no filters)")
+    for _ in range(passes):
+        t0 = time.perf_counter()
+        conn.execute(base_sql).fetchall()
+        r_base.samples_ms.append((time.perf_counter() - t0) * 1000)
+    results.append(r_base)
+
+    # 2. Rewrite only: apply_filters() cost isolated from execution.
+    r_rewrite = BenchResult(label="[filter_engine] SQL rewrite only (apply_filters)")
+    rewritten_sql = base_sql
+    rewritten_params: tuple = ()
+    for _ in range(passes):
+        t0 = time.perf_counter()
+        rewritten_sql, rewritten_params, _ = apply_filters(
+            base_sql, spec=spec, conn=conn, relationships=None, existing_params=()
+        )
+        r_rewrite.samples_ms.append((time.perf_counter() - t0) * 1000)
+    results.append(r_rewrite)
+
+    # 3. Execute the rewritten SQL (filters actually applied).
+    r_filtered = BenchResult(label="[filter_engine] rewritten query execution")
+    for _ in range(passes):
+        t0 = time.perf_counter()
+        conn.execute(rewritten_sql, list(rewritten_params)).fetchall()
+        r_filtered.samples_ms.append((time.perf_counter() - t0) * 1000)
+    results.append(r_filtered)
+
+    # 4. End-to-end: rewrite + execute together (what hydrate_widget pays).
+    r_e2e = BenchResult(label="[filter_engine] rewrite + execute (end-to-end)")
+    for _ in range(passes):
+        t0 = time.perf_counter()
+        sql, params, _ = apply_filters(
+            base_sql, spec=spec, conn=conn, relationships=None, existing_params=()
+        )
+        conn.execute(sql, list(params)).fetchall()
+        r_e2e.samples_ms.append((time.perf_counter() - t0) * 1000)
+    results.append(r_e2e)
+
+    # Annotate the rewrite row with the overhead ratio for quick visual check.
+    base_med = r_base.median_ms or r_base.first_ms or 1.0
+    rw_med = r_rewrite.median_ms or r_rewrite.first_ms or 0.0
+    if base_med > 0:
+        pct = 100.0 * rw_med / base_med
+        r_rewrite.notes.append(
+            f"rewrite overhead ~ {pct:.1f}% of baseline query time"
+        )
+    return results
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Result printer
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -421,7 +546,28 @@ def main() -> None:
     parser.add_argument("--dashboard-id",  default=os.environ.get("BENCH_DASHBOARD_ID", ""), help="Specific dashboard ID (looked up by name if omitted).")
     parser.add_argument("--dashboard-name", default=os.environ.get("BENCH_DASHBOARD_NAME", "Movies Overview"), help="Dashboard name to look up (default: 'Movies Overview').")
     parser.add_argument("--output",        default=os.environ.get("BENCH_OUTPUT", ""), help="Path for markdown report (default: docs/benchmark_results.md next to backend/).")
+    parser.add_argument(
+        "--filter-engine-only",
+        action="store_true",
+        help="Skip HTTP/auth and only run the offline filter-engine microbenchmark.",
+    )
     args = parser.parse_args()
+
+    passes = max(1, args.passes)
+
+    # ── Filter-engine-only path: no HTTP, no Supabase, no Azure. ────────
+    if args.filter_engine_only:
+        print(_bold("\nFilter-engine microbenchmark (offline) …"))
+        fe_results = _bench_filter_engine(passes)
+        groups = [("FILTER ENGINE (offline DuckDB, no server)", fe_results)]
+        _print_results(groups, passes)
+        output_path = args.output or os.path.join(
+            os.path.dirname(__file__), "..", "..", "docs",
+            "benchmark_results", "benchmark_filter_engine.md",
+        )
+        output_path = os.path.normpath(output_path)
+        _write_markdown(groups, passes, output_path, "(filter engine only)", "n/a")
+        return
 
     if not args.email or not args.password:
         raise SystemExit(
@@ -430,7 +576,6 @@ def main() -> None:
         )
 
     base = args.base_url.rstrip("/")
-    passes = max(1, args.passes)
 
     print(_bold("\nAuthenticating …"))
     token = _sign_in(base, args.email, args.password)
@@ -523,11 +668,15 @@ def main() -> None:
     print(_dim("Probing Azure Blob directly …"))
     azure_results = _bench_azure(passes)
 
+    print(_dim("Running filter-engine microbenchmark …"))
+    filter_engine_results = _bench_filter_engine(passes)
+
     # ── Print all results ────────────────────────────────────────────────────
     groups = [
         ("API ENDPOINTS (round-trip through FastAPI)", api_results),
         ("SUPABASE (direct PostgREST, no app server)", supabase_results),
         ("AZURE BLOB STORAGE (direct SDK, no app server)", azure_results),
+        ("FILTER ENGINE (offline DuckDB microbenchmark)", filter_engine_results),
     ]
     _print_results(groups, passes)
 

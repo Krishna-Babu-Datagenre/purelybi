@@ -14,6 +14,7 @@ import {
   Plug,
   SlidersHorizontal,
   Table,
+  Database,
 } from 'lucide-react';
 import { useDashboardStore } from '../store/useDashboardStore';
 import type { ApiDashboardMeta, TemplateMeta } from '../types';
@@ -306,6 +307,14 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
               >
                 <Table size={20} />
               </button>
+              <button
+                type="button"
+                onClick={() => setNavigationPage('metadata')}
+                className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'metadata' ? 'sidebar-item--active' : ''}`}
+                title="Metadata"
+              >
+                <Database size={20} />
+              </button>
             </>
           ) : (
             <>
@@ -332,6 +341,14 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
               >
                 <Table size={20} />
                 <span className="truncate">View raw tables</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setNavigationPage('metadata')}
+                className={`sidebar-item ${navigationPage === 'metadata' ? 'sidebar-item--active' : ''}`}
+              >
+                <Database size={20} />
+                <span className="truncate">Metadata</span>
               </button>
             </>
           )}

@@ -6,10 +6,12 @@ import Topbar from './components/Topbar';
 import ChatDrawer from './components/ChatDrawer';
 import LoginPage from './components/LoginPage';
 import DateFilterBar from './components/DateFilterBar';
+import FilterPane from './components/FilterPane/FilterPane';
 
 import DataConnectPage from './components/data/DataConnectPage';
 import DataManagePage from './components/data/DataManagePage';
 import DataRawTablesPage from './components/data/DataRawTablesPage';
+import MetadataReviewPage from './components/data/MetadataReviewPage';
 import HomePage from './components/HomePage';
 import DashboardBuilderEmptyState from './components/DashboardBuilderEmptyState';
 import { useDashboardStore } from './store/useDashboardStore';
@@ -48,6 +50,7 @@ const App = () => {
     if (navigationPage === 'data-connect') return 'Connect a new source';
     if (navigationPage === 'data-manage') return 'Manage connections';
     if (navigationPage === 'data-raw-tables') return 'View raw tables';
+    if (navigationPage === 'metadata') return 'Metadata review';
     return undefined;
   }, [navigationPage, hasDashboard, dashboard]);
 
@@ -194,8 +197,9 @@ const App = () => {
                       flexShrink: 0,
                     }}
                   >
-                    <div className="min-w-0 justify-self-end">
+                    <div className="min-w-0 justify-self-end flex items-center gap-2">
                       <DateFilterBar />
+                      <FilterPane />
                     </div>
                   </div>
                   <DashboardGrid />
@@ -266,6 +270,14 @@ const App = () => {
           )}
           {navigationPage === 'data-raw-tables' && (
             <DataRawTablesPage
+              sidebarCollapsed={sidebarCollapsed}
+              chatOpen={chatOpen}
+              chatModal={chatModal}
+              chatWidthPx={chatWidthPx}
+            />
+          )}
+          {navigationPage === 'metadata' && (
+            <MetadataReviewPage
               sidebarCollapsed={sidebarCollapsed}
               chatOpen={chatOpen}
               chatModal={chatModal}
