@@ -5,10 +5,6 @@ import type {
   FilterSpec,
   Filter,
   TimeFilter,
-  ColumnRef,
-  TimePreset,
-  CategoricalFilter,
-  NumericFilter,
 } from '../types/metadata';
 import {
   listTableMetadata,
