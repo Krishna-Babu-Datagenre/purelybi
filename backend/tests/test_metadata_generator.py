@@ -151,16 +151,26 @@ class MetadataGeneratorIntegrationTest(unittest.TestCase):
         conn, table_names = _seed_duckdb()
         recorder = _FakeUpsertRecorder()
 
-        # Patch out external integrations.
+        # Patch out external integrations. The hybrid discovery engine is
+        # bypassed entirely; we feed the fake LLM proposals straight through
+        # the new internal overlap-validation helper so the test still
+        # exercises the join-probe rejection path.
         with patch.object(generator_main, "open_sandbox", return_value=(conn, table_names)), \
              patch.object(generator_main, "describe_table", side_effect=_fake_describe), \
-             patch.object(llm_relationships, "propose_edges", side_effect=_fake_propose), \
              patch.object(generator_main, "_client", return_value=MagicMock()) as client_factory, \
              patch.object(generator_main, "update_job", side_effect=lambda c, **kw: recorder.job_updates.append(kw)), \
              patch.object(generator_main, "upsert_table_metadata", side_effect=lambda c, *, user_id, payloads: recorder.tables.extend(payloads) or len(list(payloads))), \
              patch.object(generator_main, "upsert_column_metadata", side_effect=lambda c, *, user_id, payloads: recorder.columns.extend(payloads) or len(list(payloads))), \
              patch.object(generator_main, "upsert_relationships", side_effect=lambda c, *, user_id, edges: recorder.relationships.extend(edges) or len(list(edges))), \
-             patch.object(generator_main, "discover_relationships", side_effect=lambda c, snaps: llm_relationships.validate_edges(c, _fake_propose(snaps))):
+             patch.object(
+                 generator_main,
+                 "discover_relationships",
+                 side_effect=lambda c, snaps: llm_relationships._validate_with_overlap(
+                     c,
+                     _fake_propose(snaps),
+                     min_overlap=llm_relationships._MIN_OVERLAP_RATIO,
+                 ),
+             ):
             rc = generator_main.run(user_id="test-user", job_id="test-job")
 
         self.assertEqual(rc, 0)
@@ -261,40 +271,49 @@ class StructuredOutputTests(unittest.TestCase):
             {("id", "identifier"), ("created_at", "temporal"), ("total_price", "measure")},
         )
 
-    def test_propose_edges_uses_structured_output(self):
+    def test_llm_phase_uses_structured_output(self):
         snaps = [
             db_inspect.TableSnapshot(
                 name="orders",
                 columns=[
-                    db_inspect.ColumnSnapshot(name="id", data_type="BIGINT"),
-                    db_inspect.ColumnSnapshot(name="customer_id", data_type="BIGINT"),
+                    db_inspect.ColumnSnapshot(
+                        name="id", data_type="BIGINT", cardinality=100
+                    ),
+                    db_inspect.ColumnSnapshot(
+                        name="weird_ref", data_type="BIGINT", cardinality=50
+                    ),
                 ],
             ),
             db_inspect.TableSnapshot(
                 name="customers",
                 columns=[
-                    db_inspect.ColumnSnapshot(name="id", data_type="BIGINT"),
+                    db_inspect.ColumnSnapshot(
+                        name="id", data_type="BIGINT", cardinality=50
+                    ),
                 ],
             ),
         ]
+        # ``orders.id`` is the orders PK; ``customers.id`` is the customers PK.
+        # ``orders.weird_ref`` has no obvious name link, so the heuristic
+        # phase will route ``orders`` to the LLM as an orphan target.
+        pks = {"orders": {"id"}, "customers": {"id"}}
+        orphan = {"orders"}
 
         fake_chain = MagicMock()
         fake_chain.invoke.return_value = llm_relationships._RelationshipProposal(
             edges=[
                 llm_relationships._ProposedEdge(
-                    from_table="orders",
-                    from_column="customer_id",
-                    to_table="customers",
-                    to_column="id",
+                    target_column="weird_ref",
+                    parent_table="customers",
+                    parent_column="id",
                     kind="many_to_one",
                     confidence=0.9,
                 ),
                 # Invented column — should be filtered out.
                 llm_relationships._ProposedEdge(
-                    from_table="orders",
-                    from_column="bogus",
-                    to_table="customers",
-                    to_column="id",
+                    target_column="bogus",
+                    parent_table="customers",
+                    parent_column="id",
                     kind="many_to_one",
                     confidence=0.5,
                 ),
@@ -304,13 +323,18 @@ class StructuredOutputTests(unittest.TestCase):
         fake_llm.with_structured_output.return_value = fake_chain
 
         with patch.object(llm_relationships, "_llm", return_value=fake_llm):
-            edges = llm_relationships.propose_edges(snaps)
+            edges = llm_relationships._llm_phase(
+                snaps, pks, near_misses=[], orphan_tables=orphan
+            )
 
         fake_llm.with_structured_output.assert_called_once_with(
             llm_relationships._RelationshipProposal
         )
         self.assertEqual(len(edges), 1)
-        self.assertEqual(edges[0]["from_column"], "customer_id")
+        self.assertEqual(edges[0]["from_table"], "orders")
+        self.assertEqual(edges[0]["from_column"], "weird_ref")
+        self.assertEqual(edges[0]["to_table"], "customers")
+        self.assertEqual(edges[0]["to_column"], "id")
 
     def test_describe_table_batches_large_tables(self):
         """Tables with > COLUMN_BATCH_SIZE columns must be described in batches."""
@@ -404,6 +428,95 @@ class SamplingHygieneTests(unittest.TestCase):
         snaps = db_inspect.snapshot_all(conn, ["big", "tiny"])
         names = [s.name for s in snaps]
         self.assertEqual(names, ["big"])
+
+
+class HeuristicRelationshipTests(unittest.TestCase):
+    """Unit tests for the Phase 1 heuristic engine."""
+
+    def test_id_to_id_cross_table_detected(self):
+        """Two tables sharing a PK column named ``id`` with high overlap."""
+        conn = duckdb.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE parents (id BIGINT, label VARCHAR);
+            INSERT INTO parents VALUES (1,'a'), (2,'b'), (3,'c'), (4,'d'), (5,'e');
+
+            CREATE TABLE children (id BIGINT, value DOUBLE);
+            INSERT INTO children VALUES (1, 10), (2, 20), (3, 30);
+        """)
+        snaps = [
+            db_inspect.TableSnapshot(
+                name="parents",
+                columns=[
+                    db_inspect.ColumnSnapshot(name="id", data_type="BIGINT", cardinality=5),
+                    db_inspect.ColumnSnapshot(name="label", data_type="VARCHAR", cardinality=5),
+                ],
+            ),
+            db_inspect.TableSnapshot(
+                name="children",
+                columns=[
+                    db_inspect.ColumnSnapshot(name="id", data_type="BIGINT", cardinality=3),
+                    db_inspect.ColumnSnapshot(name="value", data_type="DOUBLE", cardinality=3),
+                ],
+            ),
+        ]
+        # Both ``id`` columns are PK candidates (cardinality ≈ row count).
+        pks = {"parents": {"id"}, "children": {"id"}}
+
+        auto, near, orphan = llm_relationships._heuristic_phase(conn, snaps, pks)
+        # children.id values are a subset of parents.id → valid FK detected.
+        all_edges = auto + near
+        matching = [
+            e for e in all_edges
+            if e.from_table == "children" and e.to_table == "parents"
+            and e.from_column == "id" and e.to_column == "id"
+        ]
+        self.assertTrue(len(matching) >= 1, f"Expected id→id edge, got {all_edges}")
+
+    def test_semantic_type_identifier_expands_candidates(self):
+        """A column not matching name/type regex but tagged 'identifier' is considered."""
+        conn = duckdb.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE dim_store (store_key VARCHAR, name VARCHAR);
+            INSERT INTO dim_store VALUES
+                ('S1','A'), ('S2','B'), ('S3','C'), ('S4','D'), ('S5','E'),
+                ('S6','F'), ('S7','G'), ('S8','H'), ('S9','I'), ('S10','J');
+
+            CREATE TABLE fact_sales (store_ref VARCHAR, amount DOUBLE);
+            INSERT INTO fact_sales VALUES
+                ('S1',10), ('S2',20), ('S3',15), ('S4',25), ('S5',30),
+                ('S6',35), ('S1',12), ('S2',22);
+        """)
+        snaps = [
+            db_inspect.TableSnapshot(
+                name="dim_store",
+                columns=[
+                    db_inspect.ColumnSnapshot(
+                        name="store_key", data_type="VARCHAR", cardinality=10,
+                    ),
+                    db_inspect.ColumnSnapshot(name="name", data_type="VARCHAR", cardinality=10),
+                ],
+            ),
+            db_inspect.TableSnapshot(
+                name="fact_sales",
+                columns=[
+                    db_inspect.ColumnSnapshot(
+                        name="store_ref", data_type="VARCHAR", cardinality=6,
+                        # LLM describe classified this as "identifier"
+                        semantic_type="identifier",
+                    ),
+                    db_inspect.ColumnSnapshot(
+                        name="amount", data_type="DOUBLE", cardinality=7,
+                    ),
+                ],
+            ),
+        ]
+        pks = {"dim_store": {"store_key"}, "fact_sales": set()}
+
+        auto, near, orphan = llm_relationships._heuristic_phase(conn, snaps, pks)
+        # store_ref → store_key should surface via fuzzy name + overlap,
+        # but only because semantic_type="identifier" lets store_ref in.
+        all_from_col = [e.from_column for e in auto + near]
+        self.assertIn("store_ref", all_from_col)
 
 
 if __name__ == "__main__":

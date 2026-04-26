@@ -137,6 +137,14 @@ def run(user_id: str, job_id: str) -> int:
             )
             column_payloads.extend(_column_payloads(snap, llm_payload))
 
+            # Write LLM semantic types back onto the snapshot so the
+            # relationship engine can leverage them (e.g. "identifier").
+            by_name = {c["name"]: c for c in llm_payload.get("columns", [])}
+            for col in snap.columns:
+                st = by_name.get(col.name, {}).get("semantic_type")
+                if st:
+                    col.semantic_type = st
+
         update_job(
             client,
             user_id=user_id,

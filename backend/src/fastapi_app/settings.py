@@ -123,13 +123,10 @@ AZURE_FILE_SHARE_NAME_V2: str = _env(
 SYNC_UPLOADER_IMAGE: str = _env("SYNC_UPLOADER_IMAGE")
 
 # ── Metadata generator (Group B / native_dashboard_filtering.md) ──
-# Optional separate ACA job + container image. Falls back to the shared sync
-# job when the dedicated values are not set.
+# Dedicated ACA job + container image. These must be set explicitly —
+# there is no fallback to the shared sync job.
 METADATA_GENERATOR_IMAGE: str = _env("METADATA_GENERATOR_IMAGE")
-METADATA_GENERATOR_ACA_JOB_NAME: str = _env(
-    "METADATA_GENERATOR_ACA_JOB_NAME", _env("ACA_JOB_NAME")
-)
+METADATA_GENERATOR_ACA_JOB_NAME: str = _env("METADATA_GENERATOR_ACA_JOB_NAME")
 METADATA_GENERATOR_ACA_CONTAINER_NAME: str = _env(
-    "METADATA_GENERATOR_ACA_CONTAINER_NAME",
-    _env("ACA_JOB_CONTAINER_NAME", "connector"),
+    "METADATA_GENERATOR_ACA_CONTAINER_NAME"
 )

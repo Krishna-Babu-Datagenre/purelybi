@@ -18,6 +18,7 @@ from typing import Any
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.appcontainers import ContainerAppsAPIClient
 
+from fastapi_app.models.metadata import MetadataJobStatus
 from fastapi_app.services import metadata_service
 from fastapi_app.settings import (
     ACA_RESOURCE_GROUP_V2,
@@ -112,10 +113,15 @@ def start_job(*, user_id: str, job_id: str) -> str | None:
         metadata_service.update_job(
             user_id=user_id,
             job_id=job_id,
+            status=MetadataJobStatus.failed,
+            error=str(exc),
             message=(
                 "Metadata generator container is not configured for this "
-                "deployment. The job row was created but no execution started."
+                "deployment. Ask an admin to set METADATA_GENERATOR_IMAGE "
+                "(and ACA_SUBSCRIPTION_ID / ACA_RESOURCE_GROUP) on the "
+                "backend."
             ),
+            mark_finished=True,
         )
         return None
 
@@ -147,7 +153,9 @@ def start_job(*, user_id: str, job_id: str) -> str | None:
         metadata_service.update_job(
             user_id=user_id,
             job_id=job_id,
+            status=MetadataJobStatus.failed,
             error=f"Failed to start ACA job: {type(exc).__name__}: {exc}",
+            mark_finished=True,
         )
         raise
 

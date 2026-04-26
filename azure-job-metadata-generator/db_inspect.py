@@ -62,6 +62,9 @@ class ColumnSnapshot:
     data_type: str
     cardinality: int | None = None
     sample_values: list[Any] = field(default_factory=list)
+    # Optionally populated after the LLM describe step so downstream
+    # consumers (e.g. relationship detection) can leverage semantic typing.
+    semantic_type: str | None = None
 
 
 @dataclass
