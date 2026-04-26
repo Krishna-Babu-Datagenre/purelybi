@@ -22,6 +22,7 @@ from llm_describe import describe_table
 from llm_relationships import discover_relationships
 from upsert import (
     _client,
+    delete_generated_metadata,
     fetch_connector_map,
     update_job,
     upsert_column_metadata,
@@ -83,8 +84,20 @@ def run(user_id: str, job_id: str) -> int:
             job_id=job_id,
             status="running",
             mark_started=True,
-            message="Opening DuckDB sandbox.",
+            message="Clearing stale metadata.",
             progress=2,
+        )
+
+        # Wipe auto-generated rows from previous runs so only fresh results
+        # are visible.  User-edited rows are preserved.
+        delete_generated_metadata(client, user_id=user_id)
+
+        update_job(
+            client,
+            user_id=user_id,
+            job_id=job_id,
+            message="Opening DuckDB sandbox.",
+            progress=5,
         )
         conn, tables = open_sandbox(user_id)
 

@@ -179,6 +179,37 @@ def _filter_unedited(
     ]
 
 
+def delete_generated_metadata(
+    client: httpx.Client,
+    *,
+    user_id: str,
+) -> None:
+    """Delete all auto-generated (non-user-edited) metadata for *user_id*.
+
+    Called at the start of a new generation job so that stale rows from
+    previous runs do not linger.  User-edited rows are preserved.
+    """
+    for table in (_TABLES_TBL, _COLUMNS_TBL, _RELATIONSHIPS_TBL):
+        r = client.delete(
+            f"/{table}",
+            params={
+                "user_id": f"eq.{user_id}",
+                "edited_by_user": "eq.false",
+            },
+        )
+        if r.status_code >= 400:
+            logger.error(
+                "delete_generated_metadata %s failed (%d): %s",
+                table,
+                r.status_code,
+                r.text,
+            )
+            raise RuntimeError(
+                f"Failed to clear stale metadata from {table}: {r.text[:300]}"
+            )
+        logger.info("Cleared auto-generated rows from %s for user %s", table, user_id)
+
+
 def _bulk_upsert(
     client: httpx.Client,
     table: str,

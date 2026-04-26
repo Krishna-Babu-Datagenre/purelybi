@@ -131,11 +131,11 @@ Rules:
 
 def _llm() -> AzureChatOpenAI:
     return AzureChatOpenAI(
-        azure_deployment=os.getenv("AZURE_LLM_NAME", "gpt-4.1"),
+        azure_deployment=os.getenv("AZURE_LLM_NAME"),
         api_key=os.getenv("AZURE_LLM_API_KEY"),
         azure_endpoint=os.getenv("AZURE_LLM_ENDPOINT"),
-        api_version=os.getenv("AZURE_LLM_API_VERSION", "2024-12-01-preview"),
-        temperature=0.25,
+        api_version=os.getenv("AZURE_LLM_API_VERSION"),
+        temperature=0.1,
     )
 
 

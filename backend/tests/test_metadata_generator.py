@@ -158,6 +158,7 @@ class MetadataGeneratorIntegrationTest(unittest.TestCase):
         with patch.object(generator_main, "open_sandbox", return_value=(conn, table_names)), \
              patch.object(generator_main, "describe_table", side_effect=_fake_describe), \
              patch.object(generator_main, "_client", return_value=MagicMock()) as client_factory, \
+             patch.object(generator_main, "delete_generated_metadata", return_value=None), \
              patch.object(generator_main, "update_job", side_effect=lambda c, **kw: recorder.job_updates.append(kw)), \
              patch.object(generator_main, "upsert_table_metadata", side_effect=lambda c, *, user_id, payloads: recorder.tables.extend(payloads) or len(list(payloads))), \
              patch.object(generator_main, "upsert_column_metadata", side_effect=lambda c, *, user_id, payloads: recorder.columns.extend(payloads) or len(list(payloads))), \
@@ -217,6 +218,7 @@ class MetadataGeneratorIntegrationTest(unittest.TestCase):
 
         with patch.object(generator_main, "open_sandbox", return_value=(empty_conn, [])), \
              patch.object(generator_main, "_client", return_value=MagicMock()), \
+             patch.object(generator_main, "delete_generated_metadata", return_value=None), \
              patch.object(generator_main, "update_job", side_effect=lambda c, **kw: recorder.job_updates.append(kw)):
             rc = generator_main.run(user_id="test-user", job_id="test-job")
 

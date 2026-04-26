@@ -59,7 +59,7 @@ RelationshipKind = Literal["many_to_one", "one_to_one", "many_to_many"]
 _MIN_OVERLAP_RATIO = float(os.environ.get("METADATA_RELATIONSHIP_MIN_OVERLAP", "0.5"))
 # Stricter overlap demanded of LLM-proposed edges (hallucination filter).
 _LLM_VALIDATION_OVERLAP = float(
-    os.environ.get("METADATA_RELATIONSHIP_LLM_OVERLAP", "0.9")
+    os.environ.get("METADATA_RELATIONSHIP_LLM_OVERLAP", "0.80")
 )
 # Final cap on the number of edges returned overall.
 _MAX_EDGES = int(os.environ.get("METADATA_RELATIONSHIP_MAX_EDGES", "40"))
@@ -72,13 +72,13 @@ _AUTO_APPROVE_SCORE = float(os.environ.get("METADATA_RELATIONSHIP_AUTO_SCORE", "
 _NEAR_MISS_SCORE = float(os.environ.get("METADATA_RELATIONSHIP_NEAR_SCORE", "0.40"))
 # Tolerance for treating distinct-count == row-count (PK candidate).
 _PK_DISTINCT_TOLERANCE = float(
-    os.environ.get("METADATA_RELATIONSHIP_PK_TOLERANCE", "0.98")
+    os.environ.get("METADATA_RELATIONSHIP_PK_TOLERANCE", "0.90")
 )
 # Skip columns whose approx distinct count is below this (booleans, flags).
 _MIN_FK_CARDINALITY = int(os.environ.get("METADATA_RELATIONSHIP_MIN_FK_CARD", "5"))
 # Jaro-Winkler similarity threshold for fuzzy name matching.
 _FUZZY_NAME_THRESHOLD = float(
-    os.environ.get("METADATA_RELATIONSHIP_FUZZY_THRESHOLD", "0.88")
+    os.environ.get("METADATA_RELATIONSHIP_FUZZY_THRESHOLD", "0.80")
 )
 
 
@@ -265,7 +265,9 @@ def _table_row_count(conn: duckdb.DuckDBPyConnection, table: str) -> int:
     if not _safe(table):
         return 0
     try:
-        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM (SELECT DISTINCT * FROM {table})"
+        ).fetchone()
         return int(row[0]) if row and row[0] is not None else 0
     except Exception:
         return 0
@@ -322,11 +324,13 @@ def _name_similarity(
         return 0.85
 
     # 2. <entity>_id (or _fk/_uuid/_key) → <entity>(s|es).id pattern.
+    # pk_t may be connector-prefixed (e.g. "source_facebook_marketing_ads")
+    # so we check both exact equality and endswith to handle those cases.
     m = _FK_SUFFIX_RE.match(fk_col)
     if m:
         entity = m.group(1).lower()
         for plural in (entity, entity + "s", entity + "es"):
-            if pk_t == plural and pk_l in ("id", entity + "_id", entity + "_sk"):
+            if (pk_t == plural or pk_t.endswith("_" + plural)) and pk_l in ("id", entity + "_id", entity + "_sk"):
                 return 0.95
 
     # 3. Strip the trailing _id/_fk/_uuid/_key suffix from both sides and
@@ -530,11 +534,11 @@ Hard cap: at most {max_edges} edges across this prompt.
 
 def _llm() -> AzureChatOpenAI:
     return AzureChatOpenAI(
-        azure_deployment=os.getenv("AZURE_LLM_NAME", "gpt-4.1"),
+        azure_deployment=os.getenv("AZURE_LLM_NAME"),
         api_key=os.getenv("AZURE_LLM_API_KEY"),
         azure_endpoint=os.getenv("AZURE_LLM_ENDPOINT"),
-        api_version=os.getenv("AZURE_LLM_API_VERSION", "2024-12-01-preview"),
-        temperature=0,
+        api_version=os.getenv("AZURE_LLM_API_VERSION"),
+        temperature=0.1,
     )
 
 

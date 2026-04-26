@@ -37,3 +37,4 @@ one-off/*
 .vscode/*
 archived/*
 docs/inspiration/*
+azure-job-metadata-generator/local-testing/*
