@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Pause, Pencil, Play, Trash2 } from 'lucide-react';
+import { Pause, Pencil, Play, Trash2, UploadCloud } from 'lucide-react';
 import type { UserConnectorConfig } from '../../types';
 import {
   deleteUserConnector,
@@ -8,6 +8,7 @@ import {
 } from '../../services/backendClient';
 import { useDashboardStore } from '../../store/useDashboardStore';
 import DataPageFrame from './DataPageFrame';
+import LocalFileUploadModal from './LocalFileUploadModal';
 
 interface DataManagePageProps {
   sidebarCollapsed: boolean;
@@ -43,6 +44,10 @@ const DataManagePage = ({
   const [editImage, setEditImage] = useState('');
   const [editFreq, setEditFreq] = useState(360);
   const [editError, setEditError] = useState<string | null>(null);
+
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [uploadConfigId, setUploadConfigId] = useState<string | undefined>(undefined);
+  const [uploadSourceName, setUploadSourceName] = useState<string | undefined>(undefined);
 
   const load = useCallback(async () => {
     setError(null);
@@ -207,25 +212,43 @@ const DataManagePage = ({
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-50 cursor-pointer transition-colors duration-200"
-                    disabled={busyId === r.id}
-                    onClick={() => togglePause(r)}
-                    title={r.is_active ? 'Pause sync' : 'Resume sync'}
-                  >
-                    {r.is_active ? <Pause size={14} /> : <Play size={14} />}
-                    {r.is_active ? 'Pause' : 'Resume'}
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-50 cursor-pointer transition-colors duration-200"
-                    disabled={busyId === r.id}
-                    onClick={() => openEdit(r)}
-                  >
-                    <Pencil size={14} />
-                    Edit
-                  </button>
+                  {r.docker_repository === 'local/file-upload' ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-50 cursor-pointer transition-colors duration-200"
+                      disabled={busyId === r.id}
+                      onClick={() => {
+                        setUploadConfigId(r.id);
+                        setUploadSourceName(r.connector_name);
+                        setUploadModalOpen(true);
+                      }}
+                    >
+                      <UploadCloud size={14} />
+                      Upload files
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-50 cursor-pointer transition-colors duration-200"
+                        disabled={busyId === r.id}
+                        onClick={() => togglePause(r)}
+                        title={r.is_active ? 'Pause sync' : 'Resume sync'}
+                      >
+                        {r.is_active ? <Pause size={14} /> : <Play size={14} />}
+                        {r.is_active ? 'Pause' : 'Resume'}
+                      </button>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] disabled:opacity-50 cursor-pointer transition-colors duration-200"
+                        disabled={busyId === r.id}
+                        onClick={() => openEdit(r)}
+                      >
+                        <Pencil size={14} />
+                        Edit
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
                     className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/25 px-3 py-1.5 text-xs font-medium text-red-300/95 hover:bg-red-950/30 disabled:opacity-50 cursor-pointer transition-colors duration-200"
@@ -302,6 +325,18 @@ const DataManagePage = ({
             </div>
           </div>
         </div>
+      )}
+
+      {uploadModalOpen && (
+        <LocalFileUploadModal
+          initialConfigId={uploadConfigId}
+          initialSourceName={uploadSourceName}
+          onClose={() => setUploadModalOpen(false)}
+          onSuccess={(updated) => {
+            setRows((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+            setUploadModalOpen(false);
+          }}
+        />
       )}
     </DataPageFrame>
   );

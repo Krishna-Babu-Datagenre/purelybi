@@ -89,21 +89,30 @@ export async function fetchWithAuthRetry(
   init?: RequestInit,
 ): Promise<Response> {
   await ensureAccessTokenFresh();
+  
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     ...authHeadersFromStore(),
     ...(init?.headers as Record<string, string>),
   };
+  
+  if (!(init?.body instanceof FormData) && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+
   let res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
 
   if (res.status === 401 && useAuthStore.getState().refreshToken) {
     const ok = await runTokenRefresh();
     if (ok) {
       const headers2: Record<string, string> = {
-        'Content-Type': 'application/json',
         ...authHeadersFromStore(),
         ...(init?.headers as Record<string, string>),
       };
+      
+      if (!(init?.body instanceof FormData) && !headers2['Content-Type']) {
+        headers2['Content-Type'] = 'application/json';
+      }
+      
       res = await fetch(`${BASE_URL}${path}`, { ...init, headers: headers2 });
     }
   }

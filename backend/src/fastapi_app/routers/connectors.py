@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import date
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from fastapi_app.models.auth import UserProfile
@@ -36,6 +36,8 @@ from fastapi_app.services.connector_service import (
     list_synced_tables_metadata,
     list_user_connectors,
     update_user_connector,
+    preview_local_file,
+    process_local_file_upload,
 )
 from fastapi_app.utils.auth_dep import get_current_user_dep
 
@@ -228,3 +230,33 @@ def delete_my_connector(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Connector configuration not found.",
         )
+
+
+@router.post("/upload/preview", response_model=RawTablePreview)
+async def preview_local_upload(
+    file: UploadFile = File(...),
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Preview a single uploaded file (CSV, JSON, Excel, Parquet)."""
+    del user
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided.")
+    data = await preview_local_file(file)
+    if data is None:
+        raise HTTPException(status_code=400, detail="Could not preview file.")
+    return data
+
+
+@router.post("/upload", response_model=UserConnectorConfig)
+async def upload_local_files(
+    files: list[UploadFile] = File(...),
+    source_name: str = Form(...),
+    config_id: str | None = Form(None),
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Upload multiple local files directly as a data source."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    return await process_local_file_upload(
+        user_id=user.id, files=files, source_name=source_name, config_id=config_id
+    )

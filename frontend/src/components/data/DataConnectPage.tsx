@@ -1,9 +1,11 @@
 import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ExternalLink, Plug, Search, X } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Plug, Search, X, UploadCloud } from 'lucide-react';
 import type { ConnectorCatalogDetail, ConnectorCatalogListItem } from '../../types';
 import { getConnectorCatalogDetail, listConnectorCatalog } from '../../services/backendClient';
 import DataPageFrame from './DataPageFrame';
 import OnboardingChatPanel from './OnboardingChatPanel';
+import LocalFileUploadModal from './LocalFileUploadModal';
+import { useDashboardStore } from '../../store/useDashboardStore';
 
 /* ── Props ── */
 
@@ -303,6 +305,7 @@ const DataConnectPage = ({
   chatModal,
   chatWidthPx,
 }: DataConnectPageProps) => {
+  const setNavigationPage = useDashboardStore((s) => s.setNavigationPage);
   const searchId = useId();
   const detailTitleId = useId();
   const detailRef = useRef<HTMLHeadingElement>(null);
@@ -322,6 +325,8 @@ const DataConnectPage = ({
   const [detail, setDetail] = useState<ConnectorCatalogDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+
+  const [showUploadModal, setShowUploadModal] = useState(false);
 
   /* Fetch full catalog once per visit (see `listConnectorCatalog` TTL cache in backendClient). */
   const loadCatalog = useCallback(async (forceRefresh = false) => {
@@ -457,22 +462,32 @@ const DataConnectPage = ({
                 <div className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-6 py-5 space-y-6">
                   {/* Search + filters */}
                   <div className="space-y-4">
-                    <div className="relative max-w-2xl">
-                      <Search
-                        className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none"
-                        size={18}
-                        aria-hidden
-                      />
-                      <input
-                        id={searchId}
-                        type="search"
-                        autoComplete="off"
-                        placeholder="Search your data source"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        className="w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] pl-11 pr-5 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all duration-200 focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20"
-                        aria-label="Search data sources"
-                      />
+                    <div className="flex flex-col sm:flex-row gap-4 items-center max-w-3xl">
+                      <div className="relative flex-1 w-full">
+                        <Search
+                          className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none"
+                          size={18}
+                          aria-hidden
+                        />
+                        <input
+                          id={searchId}
+                          type="search"
+                          autoComplete="off"
+                          placeholder="Search your data source"
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                          className="w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] pl-11 pr-5 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all duration-200 focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20"
+                          aria-label="Search data sources"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowUploadModal(true)}
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-5 py-3 text-sm font-medium text-white hover:opacity-90 transition-opacity whitespace-nowrap shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--brand)]"
+                      >
+                        <UploadCloud size={18} />
+                        Upload Local Files
+                      </button>
                     </div>
 
                     <div className="space-y-2">
@@ -737,6 +752,16 @@ const DataConnectPage = ({
             </section>
           )}
         </div>
+        
+        {showUploadModal && (
+          <LocalFileUploadModal
+            onClose={() => setShowUploadModal(false)}
+            onSuccess={() => {
+              setShowUploadModal(false);
+              setNavigationPage('data-manage');
+            }}
+          />
+        )}
     </DataPageFrame>
   );
 };

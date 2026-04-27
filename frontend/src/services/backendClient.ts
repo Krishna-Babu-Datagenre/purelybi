@@ -590,6 +590,69 @@ export function fetchRawTablePreview(
 
 export { RAW_PREVIEW_PAGE_SIZE };
 
+/** POST /api/connectors/upload/preview — preview local file */
+export async function previewLocalFile(file: File): Promise<RawTablePreview> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  let res: Response;
+  try {
+    res = await fetchWithAuthRetry('/api/connectors/upload/preview', {
+      method: 'POST',
+      body: formData,
+      // Do not set Content-Type, let the browser set it to multipart/form-data with boundary
+    });
+  } catch (err) {
+    if (isNetworkError(err)) {
+      throw new Error('Request blocked or network error.');
+    }
+    throw err;
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = typeof body.detail === 'string' ? body.detail : body.detail?.msg ?? body.message;
+    throw new Error(detail ?? `Preview failed: ${res.status} ${res.statusText}`);
+  }
+
+  return res.json() as Promise<RawTablePreview>;
+}
+
+/** POST /api/connectors/upload — upload local files */
+export async function uploadLocalFiles(
+  files: File[],
+  sourceName: string,
+  configId?: string,
+): Promise<UserConnectorConfig> {
+  const formData = new FormData();
+  files.forEach((f) => formData.append('files', f));
+  formData.append('source_name', sourceName);
+  if (configId) {
+    formData.append('config_id', configId);
+  }
+
+  let res: Response;
+  try {
+    res = await fetchWithAuthRetry('/api/connectors/upload', {
+      method: 'POST',
+      body: formData,
+    });
+  } catch (err) {
+    if (isNetworkError(err)) {
+      throw new Error('Request blocked or network error.');
+    }
+    throw err;
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = typeof body.detail === 'string' ? body.detail : body.detail?.msg ?? body.message;
+    throw new Error(detail ?? `Upload failed: ${res.status} ${res.statusText}`);
+  }
+
+  return res.json() as Promise<UserConnectorConfig>;
+}
+
 /* ── Health ── */
 
 export function healthCheck(): Promise<{ status: string }> {

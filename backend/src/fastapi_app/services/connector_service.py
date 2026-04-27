@@ -26,7 +26,7 @@ from typing import Any
 import duckdb
 
 from azure.storage.blob import BlobServiceClient
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, UploadFile
 
 from fastapi_app.models.connectors import (
     UserConnectorConfigCreate,
@@ -217,13 +217,18 @@ def preview_raw_stream_table(
 
 def _extract_connector_folder(row: dict[str, Any]) -> str:
     """Match sync worker folder naming (source extracted from docker image/repo)."""
+    docker_repository = str(row.get("docker_repository") or "").strip()
+    if docker_repository == "local/file-upload":
+        fallback = str(row.get("connector_name") or "local-file").strip().lower()
+        fallback = re.sub(r"[^a-z0-9._-]+", "-", fallback).strip("-")
+        return fallback or "local-file"
+
     docker_image = str(row.get("docker_image") or "").strip()
     if docker_image:
         repo = docker_image.split(":", 1)[0]
         last = repo.rsplit("/", 1)[-1].strip()
         if last:
             return last
-    docker_repository = str(row.get("docker_repository") or "").strip()
     if docker_repository:
         last = docker_repository.rsplit("/", 1)[-1].strip()
         if last:
@@ -708,3 +713,144 @@ def list_synced_tables_metadata(
                 )
     # Filter out any empty placeholders from failures
     return [r for r in results if r]
+
+
+async def preview_local_file(file: UploadFile) -> dict[str, Any] | None:
+    """Read a local file upload and return the first 50 rows as JSON-safe arrays."""
+    if not file.filename:
+        return None
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
+        tmp.write(await file.read())
+        temp_path = tmp.name
+        
+    try:
+        columns = []
+        rows = []
+        if file.filename.lower().endswith(('.xlsx', '.xls')):
+            import pandas as pd
+            df = pd.read_excel(temp_path, nrows=50)
+            columns = list(df.columns)
+            # handle NaNs gracefully
+            df = df.where(pd.notnull(df), None)
+            raw_rows = df.values.tolist()
+            rows = [[_preview_json_cell(c) for c in r] for r in raw_rows]
+        else:
+            con = duckdb.connect(database=":memory:")
+            # Use appropriate read function
+            if file.filename.lower().endswith('.json'):
+                query = f"SELECT * FROM read_json_auto('{temp_path}') LIMIT 50"
+            elif file.filename.lower().endswith('.parquet'):
+                query = f"SELECT * FROM read_parquet('{temp_path}') LIMIT 50"
+            else:
+                query = f"SELECT * FROM read_csv_auto('{temp_path}') LIMIT 50"
+                
+            result = con.execute(query)
+            desc = result.description
+            columns = [d[0] for d in desc] if desc else []
+            raw_rows = result.fetchall()
+            rows = [[_preview_json_cell(c) for c in r] for r in raw_rows]
+            
+        return {
+            "columns": columns,
+            "rows": rows,
+            "limit": 50,
+            "offset": 0,
+            "has_more": False,
+            "months_included": ["unpartitioned"],
+        }
+    except Exception as exc:
+        logger.exception("Failed to preview local file %s", file.filename)
+        return None
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+async def process_local_file_upload(
+    user_id: str, files: list[UploadFile], source_name: str, config_id: str | None
+) -> dict[str, Any]:
+    slug = re.sub(r"[^a-z0-9._-]+", "-", source_name.lower()).strip("-") or "local-file"
+    prefix = f"{USER_DATA_BLOB_PREFIX.strip('/')}/{user_id}/{slug}"
+    container = _get_blob_container()
+    if container is None:
+        raise HTTPException(status_code=500, detail="Azure Blob Storage not configured")
+
+    streams_added = []
+    
+    for file in files:
+        if not file.filename:
+            continue
+        filename_no_ext = os.path.splitext(file.filename)[0]
+        stream_name = re.sub(r"[^a-zA-Z0-9_]+", "_", filename_no_ext).strip("_") or "stream"
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
+            tmp.write(await file.read())
+            temp_path = tmp.name
+            
+        try:
+            parquet_path = temp_path + ".parquet"
+            if file.filename.lower().endswith(('.xlsx', '.xls')):
+                import pandas as pd
+                df = pd.read_excel(temp_path)
+                df.columns = [str(c) for c in df.columns]  # ensure string columns
+                df.to_parquet(parquet_path, engine="pyarrow")
+            else:
+                con = duckdb.connect(database=":memory:")
+                if file.filename.lower().endswith('.json'):
+                    con.execute(f"COPY (SELECT * FROM read_json_auto('{temp_path}')) TO '{parquet_path}' (FORMAT PARQUET)")
+                elif file.filename.lower().endswith('.parquet'):
+                    import shutil
+                    shutil.copy(temp_path, parquet_path)
+                else:
+                    con.execute(f"COPY (SELECT * FROM read_csv_auto('{temp_path}')) TO '{parquet_path}' (FORMAT PARQUET)")
+            
+            safe_filename = re.sub(r"[^a-zA-Z0-9_.-]+", "_", file.filename)
+            blob_name = f"{prefix}/{stream_name}/{safe_filename}.parquet"
+            with open(parquet_path, "rb") as fh:
+                container.upload_blob(name=blob_name, data=fh, overwrite=True)
+            if stream_name not in streams_added:
+                streams_added.append(stream_name)
+        except Exception as exc:
+            logger.exception("Failed to process local file upload: %s", file.filename)
+            raise HTTPException(status_code=400, detail=f"Failed to process {file.filename}: {exc}") from exc
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            if 'parquet_path' in locals() and os.path.exists(parquet_path):
+                os.unlink(parquet_path)
+
+    invalidate_stream_cache()
+
+    if config_id:
+        existing = get_user_connector(user_id, config_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Connector configuration not found.")
+        selected_streams = existing.get("selected_streams") or []
+        for s in streams_added:
+            if s not in selected_streams:
+                selected_streams.append(s)
+        patch = UserConnectorConfigUpdate(selected_streams=selected_streams)
+        result = update_user_connector(user_id, config_id, patch)
+    else:
+        body = UserConnectorConfigCreate(
+            connector_name=source_name,
+            docker_repository="local/file-upload",
+            docker_image="local",
+            selected_streams=streams_added,
+            sync_mode="one_off",
+            is_active=False,
+        )
+        result = create_user_connector(user_id, body)
+
+    # Immediately mark the upload as successfully synced so the UI doesn't show "Pending"
+    client = get_supabase_admin_client()
+    now_iso = datetime.utcnow().isoformat()
+    client.table(_TABLE).update({
+        "last_sync_status": "success",
+        "last_sync_at": now_iso
+    }).eq("id", result["id"]).execute()
+    
+    result["last_sync_status"] = "success"
+    result["last_sync_at"] = now_iso
+    return result

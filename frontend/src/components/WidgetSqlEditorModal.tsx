@@ -53,16 +53,17 @@ export default function WidgetSqlEditorModal({ widget, dashboardId, isOpen, onCl
       const cc = hydrated.chart_config || {};
       
       if (hydrated.type === 'kpi') {
-        rowsCount = cc.value !== undefined ? 1 : 0;
+        rowsCount = (cc as any).value !== undefined ? 1 : 0;
       } else {
         // Chart widget
-        if (cc.series && Array.isArray(cc.series) && cc.series.length > 0) {
-          const s = cc.series[0];
+        const chartConfig = cc as any;
+        if (chartConfig.series && Array.isArray(chartConfig.series) && chartConfig.series.length > 0) {
+          const s = chartConfig.series[0];
           if (s.data && Array.isArray(s.data)) {
             rowsCount = s.data.length;
           }
-        } else if (cc.xAxis && cc.xAxis.data && Array.isArray(cc.xAxis.data)) {
-          rowsCount = cc.xAxis.data.length;
+        } else if (chartConfig.xAxis && chartConfig.xAxis.data && Array.isArray(chartConfig.xAxis.data)) {
+          rowsCount = chartConfig.xAxis.data.length;
         }
       }
       

@@ -25,8 +25,8 @@ AZURE_STORAGE_CONTAINER: str = _env(
 )
 AZURE_STORAGE_CONNECTION_STRING: str = _env("AZURE_STORAGE_CONNECTION_STRING")
 
-# Prefix inside the container for per-user Parquet layout, e.g. "tenants" → "tenants/{user_id}/..."
-USER_DATA_BLOB_PREFIX: str = _env("USER_DATA_BLOB_PREFIX", "users")
+# Prefix inside the container for per-user Parquet layout, e.g. "user-data" → "user-data/{user_id}/..."
+USER_DATA_BLOB_PREFIX: str = _env("USER_DATA_BLOB_PREFIX", "user-data")
 
 # --- SQL agent ---
 # duckdb = LangGraph analyst over user-scoped Parquet in Azure Blob (see ai/agents/sql/duckdb_sandbox.py).
