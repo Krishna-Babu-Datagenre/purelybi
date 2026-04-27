@@ -21,6 +21,7 @@ import {
   getDashboardFiltered,
   createBlankDashboard as createBlankDashboardApi,
   addWidgetToDashboard as addWidgetToDashboardApi,
+  updateWidget as updateWidgetApiCall,
   deleteDashboard as deleteDashboardApiCall,
   deleteWidget as deleteWidgetApiCall,
   persistWidgetLayouts as persistWidgetLayoutsApiCall,
@@ -170,6 +171,12 @@ interface DashboardState {
   addWidgetToDashboard: (
     dashboardId: string,
     widget: { title: string; type: string; chart_config: Record<string, unknown>; layout?: { x: number; y: number; w: number; h: number }; data_config?: Record<string, unknown> },
+  ) => Promise<void>;
+  /** PUT /api/dashboards/{id}/widgets/{widget_id} — update widget via API */
+  updateWidgetApi: (
+    dashboardId: string,
+    widgetId: string,
+    patch: { title?: string; chart_config?: Record<string, unknown>; data_config?: Record<string, unknown> }
   ) => Promise<void>;
   /** POST /api/dashboards/{id}/duplicate — duplicate a dashboard and open the copy */
   duplicateDashboardApi: (dashboardId: string, name?: string) => Promise<void>;
@@ -469,6 +476,39 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       if (rebalancePayloads && rebalancePayloads.length > 0) {
         persistWidgetLayoutsApiCall(dashboardId, rebalancePayloads).catch(() => {});
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ error: message });
+      throw err;
+    }
+  },
+
+  updateWidgetApi: async (dashboardId, widgetId, patch) => {
+    set({ error: null });
+    try {
+      const apiWidget = await updateWidgetApiCall(dashboardId, widgetId, patch);
+      const mapped: Widget = {
+        id: apiWidget.id,
+        title: apiWidget.title,
+        type: apiWidget.type,
+        layout: apiWidget.layout,
+        chartConfig: apiWidget.chart_config,
+        dataConfig: apiWidget.data_config,
+      };
+      set((s) => {
+        const db = s.dashboards[dashboardId];
+        if (!db) return s;
+        return {
+          dashboards: {
+            ...s.dashboards,
+            [dashboardId]: {
+              ...db,
+              meta: { ...db.meta, updatedAt: now() },
+              widgets: db.widgets.map((w) => (w.id === widgetId ? { ...w, ...mapped } : w)),
+            },
+          },
+        };
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ error: message });

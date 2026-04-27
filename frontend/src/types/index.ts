@@ -94,6 +94,10 @@ export interface Widget {
    * - For chart widgets → EChartsConfig (passed directly to echarts-for-react)
    */
   chartConfig: KpiConfig | EChartsConfig;
+  /**
+   * Data configuration, typically containing the SQL query and field mappings.
+   */
+  dataConfig?: Record<string, unknown>;
 }
 
 /* ─────────────────────────────────────────────

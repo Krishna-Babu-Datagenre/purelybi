@@ -530,6 +530,50 @@ def add_widget_to_dashboard(
     return widget_row
 
 
+def update_widget_config(
+    user_id: str,
+    dashboard_id: str,
+    widget_id: str,
+    title: str | None = None,
+    chart_config: dict[str, Any] | None = None,
+    data_config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Update a widget's config. Returns row or None."""
+    client = get_supabase_admin_client()
+
+    # Verify ownership
+    rows = (
+        client.table("dashboards")
+        .select("id")
+        .eq("id", dashboard_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+        return None
+
+    payload: dict[str, Any] = {}
+    if title is not None:
+        payload["title"] = title
+    if chart_config is not None:
+        payload["chart_config"] = chart_config
+    if data_config is not None:
+        payload["data_config"] = data_config
+
+    if not payload:
+        return None
+
+    updated = (
+        client.table("widgets")
+        .update(payload)
+        .eq("id", widget_id)
+        .eq("dashboard_id", dashboard_id)
+        .execute()
+    ).data
+    return updated[0] if updated else None
+
+
 # ---------------------------------------------------------------------------
 # Instantiate a template → user-owned dashboard
 # ---------------------------------------------------------------------------

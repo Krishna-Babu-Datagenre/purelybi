@@ -312,6 +312,37 @@ export function addWidgetToDashboard(
   );
 }
 
+/** PUT /api/dashboards/{id}/widgets/{widget_id} — update existing widget */
+export function updateWidget(
+  dashboardId: string,
+  widgetId: string,
+  patch: {
+    title?: string;
+    chart_config?: Record<string, unknown>;
+    data_config?: Record<string, unknown>;
+  },
+): Promise<ApiWidget> {
+  const payload: any = {};
+  if (patch.title !== undefined) payload.title = patch.title;
+  if (patch.chart_config !== undefined) payload.chart_config = toPlainJson(patch.chart_config);
+  if (patch.data_config !== undefined) payload.data_config = toPlainJson(patch.data_config);
+
+  return request<ApiWidget>(
+    `/api/dashboards/${encodeURIComponent(dashboardId)}/widgets/${encodeURIComponent(widgetId)}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+  );
+}
+
+/** POST /api/dashboards/preview-widget — run a widget's SQL and return hydrated data */
+export function previewWidget(
+  widget: Record<string, unknown>
+): Promise<ApiWidget> {
+  return request<ApiWidget>(
+    `/api/dashboards/preview-widget`,
+    { method: 'POST', body: JSON.stringify({ widget: toPlainJson(widget) }) },
+  );
+}
+
 /** POST /api/dashboards/{id}/duplicate — duplicate a dashboard (user-owned or template) */
 export function duplicateDashboard(
   dashboardId: string,

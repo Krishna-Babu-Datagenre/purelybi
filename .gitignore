@@ -24,7 +24,10 @@ frontend/ui-inspirations/*
 
 # workspace
 .cursor/*
-.github/skills/*
+.github/*
+.agents/*
+GEMINI.md
+AGENTS.md
 
 frontend/.github/*
 backend/.github/*

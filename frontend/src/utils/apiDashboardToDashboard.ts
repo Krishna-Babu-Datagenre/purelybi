@@ -19,6 +19,7 @@ export function apiDashboardToDashboard(api: ApiDashboard): Dashboard {
     type: w.type,
     layout: w.layout,
     chartConfig: w.chart_config,
+    dataConfig: w.data_config,
   }));
   return { meta, widgets };
 }

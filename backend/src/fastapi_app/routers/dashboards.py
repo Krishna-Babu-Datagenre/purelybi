@@ -13,6 +13,8 @@ POST   /api/dashboards/{dashboard_id}/refresh          – force-refresh widget 
 POST   /api/dashboards/{dashboard_id}/filtered         – get dashboard with arbitrary filters
 DELETE /api/dashboards/{dashboard_id}                  – delete a dashboard
 DELETE /api/dashboards/{dashboard_id}/widgets/{widget_id} – delete a widget
+PUT    /api/dashboards/{dashboard_id}/widgets/{widget_id} – update a widget's config and title
+POST   /api/dashboards/preview-widget                  – run a widget's SQL and return hydrated data
 PUT    /api/dashboards/{dashboard_id}/widgets/layouts  – persist widget layout changes
 GET    /api/dashboards/builder/readiness               – AI builder data status + dataset views
 PUT    /api/dashboards/{dashboard_id}/metadata          – update dashboard name/description
@@ -42,10 +44,12 @@ from fastapi_app.services.dashboard_service import (
     persist_widget_layouts,
     refresh_dashboard,
     update_dashboard,
+    update_widget_config,
 )
 from fastapi_app.services.widget_data_service import (
     build_date_filters_from_params,
     get_max_data_date_iso,
+    hydrate_widgets,
 )
 from fastapi_app.utils.auth_dep import get_current_user_dep
 
@@ -118,6 +122,20 @@ class AddWidgetRequest(BaseModel):
         default=None,
         description="SQL query + mappings for server-side re-hydration (enables date filtering).",
     )
+
+
+class UpdateWidgetRequest(BaseModel):
+    """Body for updating an existing widget."""
+
+    title: str | None = Field(None, min_length=1)
+    chart_config: dict[str, Any] | None = Field(None)
+    data_config: dict[str, Any] | None = Field(None)
+
+
+class PreviewWidgetRequest(BaseModel):
+    """Body for previewing a widget (hydrating its data without saving)."""
+
+    widget: dict[str, Any] = Field(..., description="Widget definition to hydrate")
 
 
 class DashboardFilterRequest(BaseModel):
@@ -390,6 +408,48 @@ def add_widget(
         layout=body.layout,
         data_config=body.data_config,
     )
+
+
+@router.put("/{dashboard_id}/widgets/{widget_id}")
+def update_widget(
+    dashboard_id: str,
+    widget_id: str,
+    body: UpdateWidgetRequest,
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Update a widget's config (title, chart_config, data_config)."""
+    row = update_widget_config(
+        user_id=user.id,
+        dashboard_id=dashboard_id,
+        widget_id=widget_id,
+        title=body.title,
+        chart_config=body.chart_config,
+        data_config=body.data_config,
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Widget '{widget_id}' not found on dashboard '{dashboard_id}'.",
+        )
+    return row
+
+
+@router.post("/preview-widget")
+def preview_widget(
+    body: PreviewWidgetRequest,
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Hydrate a single widget definition with live data without saving it."""
+    # hydrate_widgets takes a list of widgets and modifies them in place
+    widgets = [body.widget]
+    hydrated = hydrate_widgets(
+        widgets,
+        tenant_id=user.id,
+        force_refresh=True,
+    )
+    if not hydrated:
+        raise HTTPException(status_code=400, detail="Failed to hydrate widget.")
+    return hydrated[0]
 
 
 @router.post("/{dashboard_id}/refresh")

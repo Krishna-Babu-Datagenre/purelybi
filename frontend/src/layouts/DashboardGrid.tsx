@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Responsive, WidthProvider, Layout } from 'react-grid-layout/legacy';
 import { GripVertical, Loader2 } from 'lucide-react';
 import { useDashboardStore } from '../store/useDashboardStore';
+import { useChatStore } from '../store/useChatStore';
 import ChartWidget from '../widgets/ChartWidget';
 import WidgetContextMenu from '../components/WidgetContextMenu';
+import WidgetSqlEditorModal from '../components/WidgetSqlEditorModal';
+import { Widget } from '../types';
 import { computeAllLayouts, BREAKPOINT_COLS } from '../utils/layoutEngine';
 
 import 'react-grid-layout/css/styles.css';
@@ -51,6 +54,10 @@ const DashboardGrid = () => {
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeCols, setActiveCols] = useState<number>(BASE_COLS);
   const [deletingWidgetIds, setDeletingWidgetIds] = useState<Set<string>>(new Set());
+  const [editingSqlWidget, setEditingSqlWidget] = useState<Widget | null>(null);
+
+  const openChat = useChatStore((s) => s.openChat);
+  const sendMessage = useChatStore((s) => s.sendMessage);
 
   const handleDeleteWidget = async (widgetId: string) => {
     if (isTemplateDashboard || !dashboardId) return;
@@ -64,6 +71,15 @@ const DashboardGrid = () => {
         return next;
       });
     }
+  };
+
+  const handleEditWithAI = (widgetTitle: string) => {
+    const dashboardName = dashboard?.meta.name;
+    if (dashboardName) {
+      useChatStore.getState().attachDashboard(dashboardName);
+    }
+    openChat();
+    sendMessage(`Edit widget: ${widgetTitle}`);
   };
 
   const layouts = useMemo(
@@ -119,6 +135,7 @@ const DashboardGrid = () => {
   }
 
   return (
+    <>
     <ResponsiveGridLayout
       key={gridKey}
       className="layout"
@@ -145,8 +162,8 @@ const DashboardGrid = () => {
         return (
           <div
             key={widget.id}
-            className={`widget-card flex flex-col overflow-hidden group ${
-              isKpi ? 'widget-card--kpi' : 'widget-card--chart'
+            className={`widget-card flex flex-col group ${
+              isKpi ? 'widget-card--kpi' : 'widget-card--chart overflow-hidden'
             }`}
             style={{ position: 'relative' }}
           >
@@ -168,21 +185,24 @@ const DashboardGrid = () => {
               </div>
             )}
 
-            {!isTemplateDashboard && (
-              <WidgetContextMenu
-                widgetTitle={widget.title}
-                onDelete={() => handleDeleteWidget(widget.id)}
-              />
-            )}
-
             {isKpi ? (
-              <div className="drag-handle kpi-drag-handle flex items-center gap-2" style={{ position: 'relative', zIndex: 1 }}>
+              <div className="drag-handle kpi-drag-handle flex items-center gap-2" style={{ position: 'relative', zIndex: 10 }}>
                 <GripVertical size={12} className="widget-grip" />
+                {!isTemplateDashboard && (
+                  <div className="ml-auto">
+                    <WidgetContextMenu
+                      widgetTitle={widget.title}
+                      onDelete={() => handleDeleteWidget(widget.id)}
+                      onEditWithAI={() => handleEditWithAI(widget.title)}
+                      onEditSql={() => setEditingSqlWidget(widget as Widget)}
+                    />
+                  </div>
+                )}
               </div>
             ) : (
               <div
                 className="widget-header flex flex-row items-center flex-nowrap shrink-0"
-                style={{ height: HANDLE_HEIGHT, position: 'relative', zIndex: 1 }}
+                style={{ height: HANDLE_HEIGHT, position: 'relative', zIndex: 10 }}
               >
                 <div className="drag-handle flex flex-1 items-center min-w-0 h-full cursor-grab active:cursor-grabbing select-none">
                   <span className="widget-title truncate min-w-0 mr-4">
@@ -190,6 +210,14 @@ const DashboardGrid = () => {
                   </span>
                   <GripVertical size={13} className="widget-grip transition-colors duration-150 shrink-0 ml-auto" />
                 </div>
+                {!isTemplateDashboard && (
+                  <WidgetContextMenu
+                    widgetTitle={widget.title}
+                    onDelete={() => handleDeleteWidget(widget.id)}
+                    onEditWithAI={() => handleEditWithAI(widget.title)}
+                    onEditSql={() => setEditingSqlWidget(widget as Widget)}
+                  />
+                )}
               </div>
             )}
 
@@ -211,6 +239,15 @@ const DashboardGrid = () => {
         );
       })}
     </ResponsiveGridLayout>
+    {editingSqlWidget && dashboardId && (
+      <WidgetSqlEditorModal
+        widget={editingSqlWidget}
+        dashboardId={dashboardId}
+        isOpen={true}
+        onClose={() => setEditingSqlWidget(null)}
+      />
+    )}
+    </>
   );
 };
 
