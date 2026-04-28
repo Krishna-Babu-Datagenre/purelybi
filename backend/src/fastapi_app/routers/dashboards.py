@@ -410,6 +410,24 @@ def add_widget(
     )
 
 
+@router.put("/{dashboard_id}/widgets/layouts", status_code=204)
+def persist_dashboard_widget_layouts(
+    dashboard_id: str,
+    body: PersistWidgetLayoutsRequest,
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Persist drag/resize layout changes for widgets on a dashboard."""
+    if not persist_widget_layouts(
+        user_id=user.id,
+        dashboard_id=dashboard_id,
+        layouts=[item.model_dump() for item in body.layouts],
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dashboard '{dashboard_id}' not found.",
+        )
+
+
 @router.put("/{dashboard_id}/widgets/{widget_id}")
 def update_widget(
     dashboard_id: str,
@@ -572,22 +590,4 @@ def remove_widget(
         raise HTTPException(
             status_code=404,
             detail=f"Widget '{widget_id}' not found.",
-        )
-
-
-@router.put("/{dashboard_id}/widgets/layouts", status_code=204)
-def persist_dashboard_widget_layouts(
-    dashboard_id: str,
-    body: PersistWidgetLayoutsRequest,
-    user: UserProfile = Depends(get_current_user_dep),
-):
-    """Persist drag/resize layout changes for widgets on a dashboard."""
-    if not persist_widget_layouts(
-        user_id=user.id,
-        dashboard_id=dashboard_id,
-        layouts=[item.model_dump() for item in body.layouts],
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Dashboard '{dashboard_id}' not found.",
         )

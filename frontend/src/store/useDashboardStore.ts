@@ -141,6 +141,17 @@ interface DashboardState {
   /** Last error message (null = no error) */
   error: string | null;
 
+  /* ── Edit Mode ── */
+  /** Whether the dashboard is currently in edit mode (allowing drag/resize) */
+  isEditMode: boolean;
+  /** Whether the layout is currently being saved to the backend */
+  isSavingLayout: boolean;
+  setEditMode: (mode: boolean) => void;
+  /** Save the current widget layout to the backend and exit edit mode */
+  saveLayout: () => Promise<void>;
+  /** Discard layout changes, exit edit mode, and reload from backend */
+  cancelEditMode: () => Promise<void>;
+
   /* ── Date filtering ── */
   /** Active quick-select preset (null = no preset active) */
   activePreset: DatePreset | null;
@@ -243,6 +254,39 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   dashboardLoading: false,
   error: null,
+
+  isEditMode: false,
+  isSavingLayout: false,
+  setEditMode: (mode) => set({ isEditMode: mode }),
+  saveLayout: async () => {
+    const { activeDashboardId, dashboards, persistWidgetLayoutsApi } = get();
+    if (!activeDashboardId) return;
+    const dashboard = dashboards[activeDashboardId];
+    if (!dashboard) return;
+    
+    set({ isSavingLayout: true });
+    try {
+      // We get the current layout from the widgets
+      const layouts = dashboard.widgets
+        .filter((w) => w.layout)
+        .map((w) => ({
+          id: w.id,
+          x: w.layout!.x,
+          y: w.layout!.y,
+          w: w.layout!.w,
+          h: w.layout!.h,
+        }));
+        
+      await persistWidgetLayoutsApi(activeDashboardId, layouts);
+      set({ isEditMode: false });
+    } finally {
+      set({ isSavingLayout: false });
+    }
+  },
+  cancelEditMode: async () => {
+    set({ isEditMode: false });
+    await get().refreshActiveDashboardFromServer();
+  },
 
   activePreset: null,
   customDateRange: null,

@@ -46,12 +46,11 @@ const DashboardGrid = () => {
   });
   const updateWidgetLayout = useDashboardStore((s) => s.updateWidgetLayout);
   const deleteWidgetApi = useDashboardStore((s) => s.deleteWidgetApi);
-  const persistWidgetLayoutsApi = useDashboardStore((s) => s.persistWidgetLayoutsApi);
+  const isEditMode = useDashboardStore((s) => s.isEditMode);
 
   const widgets = dashboard?.widgets ?? [];
   const dashboardId = dashboard?.meta.id ?? null;
   const isTemplateDashboard = dashboard?.meta.source === 'template';
-  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeCols, setActiveCols] = useState<number>(BASE_COLS);
   const [deletingWidgetIds, setDeletingWidgetIds] = useState<Set<string>>(new Set());
   const [editingSqlWidget, setEditingSqlWidget] = useState<Widget | null>(null);
@@ -97,22 +96,7 @@ const DashboardGrid = () => {
   const commitLayout = useCallback((layout: Layout) => {
     const normalized = normalizeToBaseCols(layout, activeCols);
     updateWidgetLayout([...normalized]);
-
-    if (isTemplateDashboard || !dashboardId) return;
-    if (persistTimerRef.current) {
-      clearTimeout(persistTimerRef.current);
-    }
-    persistTimerRef.current = setTimeout(() => {
-      const payload = normalized.map((item) => ({
-        id: item.i,
-        x: item.x,
-        y: item.y,
-        w: item.w,
-        h: item.h,
-      }));
-      persistWidgetLayoutsApi(dashboardId, payload).catch(() => {});
-    }, 300);
-  }, [activeCols, dashboardId, isTemplateDashboard, persistWidgetLayoutsApi, updateWidgetLayout]);
+  }, [activeCols, updateWidgetLayout]);
 
   const handleDragStop = (currentLayout: Layout) => {
     commitLayout(currentLayout);
@@ -121,14 +105,6 @@ const DashboardGrid = () => {
   const handleResizeStop = (currentLayout: Layout) => {
     commitLayout(currentLayout);
   };
-
-  useEffect(() => {
-    return () => {
-      if (persistTimerRef.current) {
-        clearTimeout(persistTimerRef.current);
-      }
-    };
-  }, []);
 
   if (!dashboard) {
     return null;
@@ -150,8 +126,8 @@ const DashboardGrid = () => {
       containerPadding={[DASHBOARD_GRID_PAD_X, 10]}
       onDragStop={handleDragStop}
       onResizeStop={handleResizeStop}
-      isDraggable={!isTemplateDashboard}
-      isResizable={!isTemplateDashboard}
+      isDraggable={isEditMode && !isTemplateDashboard}
+      isResizable={isEditMode && !isTemplateDashboard}
       draggableHandle=".drag-handle"
       resizeHandles={['s', 'w', 'e', 'sw', 'se']}
     >

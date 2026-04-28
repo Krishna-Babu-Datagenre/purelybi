@@ -7,6 +7,7 @@ import ChatDrawer from './components/ChatDrawer';
 import LoginPage from './components/LoginPage';
 import DateFilterBar from './components/DateFilterBar';
 import FilterPane from './components/FilterPane/FilterPane';
+import { LayoutDashboard, Check, X, Loader2 } from 'lucide-react';
 
 import DataConnectPage from './components/data/DataConnectPage';
 import DataManagePage from './components/data/DataManagePage';
@@ -36,6 +37,14 @@ const App = () => {
   const fetchTemplates = useDashboardStore((s) => s.fetchTemplates);
   const navigationPage = useDashboardStore((s) => s.navigationPage);
   const setNavigationPage = useDashboardStore((s) => s.setNavigationPage);
+
+  const isEditMode = useDashboardStore((s) => s.isEditMode);
+  const isSavingLayout = useDashboardStore((s) => s.isSavingLayout);
+  const setEditMode = useDashboardStore((s) => s.setEditMode);
+  const saveLayout = useDashboardStore((s) => s.saveLayout);
+  const cancelEditMode = useDashboardStore((s) => s.cancelEditMode);
+
+  const isTemplateDashboard = dashboard?.meta.source === 'template';
 
   const hasDashboard = !!dashboard;
   const showDashboardLoader = dashboardLoading || (!!activeDashboardId && !dashboard);
@@ -197,6 +206,46 @@ const App = () => {
                       flexShrink: 0,
                     }}
                   >
+                    <div className="flex items-center gap-2">
+                      {!isTemplateDashboard && (
+                        isEditMode ? (
+                          <>
+                            <button
+                              onClick={() => saveLayout()}
+                              disabled={isSavingLayout}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-[var(--brand)] hover:bg-[var(--brand-hover)] rounded-md shadow-sm transition-colors ${
+                                isSavingLayout ? 'opacity-75 cursor-not-allowed' : ''
+                              }`}
+                            >
+                              {isSavingLayout ? (
+                                <Loader2 size={16} className="animate-spin" />
+                              ) : (
+                                <Check size={16} />
+                              )}
+                              Save Layout
+                            </button>
+                            <button
+                              onClick={() => cancelEditMode()}
+                              disabled={isSavingLayout}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] rounded-md transition-colors ${
+                                isSavingLayout ? 'opacity-50 cursor-not-allowed' : ''
+                              }`}
+                            >
+                              <X size={16} />
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => setEditMode(true)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] rounded-md transition-colors"
+                          >
+                            <LayoutDashboard size={16} />
+                            Edit Layout
+                          </button>
+                        )
+                      )}
+                    </div>
                     <div className="min-w-0 justify-self-end flex items-center gap-2">
                       <DateFilterBar />
                       <FilterPane />
