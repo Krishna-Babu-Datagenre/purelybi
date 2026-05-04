@@ -40,7 +40,6 @@ def _row_to_alert_out(row: dict[str, Any]) -> AlertOut:
         sql_query=row["sql_query"],
         comparator=row["comparator"],
         threshold=float(row["threshold"]),
-        frequency=row["frequency"],
         notification_channel=row.get("notification_channel", "email"),
         notification_target=row.get("notification_target"),
         enabled=row.get("enabled", True),
@@ -80,7 +79,6 @@ def create_alert(user_id: str, payload: AlertCreate) -> AlertOut:
         "sql_query": defn.metric_sql,
         "comparator": defn.comparator.value,
         "threshold": defn.threshold,
-        "frequency": defn.frequency.value,
         "notification_channel": defn.notification_channel,
         "notification_target": defn.notification_target,
         "enabled": True,
@@ -143,8 +141,6 @@ def update_alert(user_id: str, alert_id: str, patch: AlertUpdate) -> AlertOut | 
     payload: dict[str, Any] = {}
     if patch.name is not None:
         payload["name"] = patch.name
-    if patch.frequency is not None:
-        payload["frequency"] = patch.frequency.value
     if patch.enabled is not None:
         payload["enabled"] = patch.enabled
     if patch.notification_target is not None:

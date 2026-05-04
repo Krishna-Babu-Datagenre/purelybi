@@ -1,8 +1,7 @@
 """
 Azure Function — Alert Evaluator (Timer Trigger)
 
-Runs every 5 minutes. For each enabled alert whose ``last_evaluated_at`` is
-older than its frequency interval:
+Runs every 5 minutes. For each enabled alert:
   1. Spins up a DuckDB sandbox with the tenant's Parquet data.
   2. Runs the alert's ``sql_query``.
   3. Applies the comparator + threshold.
@@ -37,13 +36,6 @@ STORAGE_CONN_STR = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
 CONTAINER = os.environ.get("BLOB_CONTAINER_NAME", "raw")
 PREFIX_ROOT = os.environ.get("USER_DATA_BLOB_PREFIX", "user-data").strip("/") or "user-data"
 DUCKDB_MEMORY_LIMIT = os.environ.get("DUCKDB_MEMORY_LIMIT", "256MB")
-
-# Frequency → minimum seconds between evaluations
-FREQUENCY_INTERVALS: dict[str, int] = {
-    "every_15_min": 15 * 60,
-    "hourly": 3600,
-    "daily": 86400,
-}
 
 _SAFE_TENANT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _HIVE_SEGMENT_RE = re.compile(r"^[^=]+=.")
@@ -193,15 +185,6 @@ def main(timer: func.TimerRequest) -> None:
     for alert_row in rows:
         alert_id = alert_row["id"]
         user_id = alert_row["user_id"]
-        frequency = alert_row.get("frequency", "hourly")
-        last_eval = alert_row.get("last_evaluated_at")
-
-        # Check if due
-        interval = FREQUENCY_INTERVALS.get(frequency, 3600)
-        if last_eval:
-            last_dt = datetime.fromisoformat(last_eval.replace("Z", "+00:00"))
-            if (utc_now - last_dt).total_seconds() < interval:
-                continue  # not due yet
 
         logger.info("Evaluating alert %s for user %s", alert_id, user_id)
 

@@ -54,8 +54,6 @@ interface AlertPreview {
   comparator?: string;
   threshold?: number;
   time_window?: string;
-  frequency?: string;
-  notification_channel?: string;
   notification_target?: string;
 }
 
@@ -68,7 +66,7 @@ const COMP_LABELS: Record<string, string> = {
    Preview Card
 ───────────────────────────────────────────── */
 
-const PreviewCard = ({ preview }: { preview: AlertPreview | null }) => {
+const PreviewCard = ({ preview, onChange }: { preview: AlertPreview | null, onChange: (key: keyof AlertPreview, value: any) => void }) => {
   if (!preview) {
     return (
       <div className="alert-builder-preview-empty">
@@ -86,59 +84,86 @@ const PreviewCard = ({ preview }: { preview: AlertPreview | null }) => {
     <div className="alert-builder-preview-card">
       <div className="alert-builder-preview-header">
         <Bell size={16} className="text-[var(--brand)]" />
-        <span className="text-sm font-semibold text-[var(--text-primary)]">
-          {preview.name || 'Untitled Alert'}
-        </span>
+        <input
+          type="text"
+          value={preview.name || ''}
+          onChange={(e) => onChange('name', e.target.value)}
+          placeholder="Alert Name"
+          className="text-sm font-semibold text-[var(--text-primary)] bg-transparent border-b border-transparent hover:border-[var(--border-strong)] focus:border-[var(--brand)] focus:outline-none px-1 py-0.5 flex-1"
+        />
       </div>
 
-      {preview.metric_description && (
-        <div className="alert-builder-preview-field">
-          <span className="alert-builder-preview-label">Metric</span>
-          <span className="text-sm text-[var(--text-primary)]">{preview.metric_description}</span>
-        </div>
-      )}
+      <div className="alert-builder-preview-field">
+        <span className="alert-builder-preview-label">Metric</span>
+        <textarea
+          value={preview.metric_description || ''}
+          onChange={(e) => onChange('metric_description', e.target.value)}
+          placeholder="Metric description..."
+          className="text-sm text-[var(--text-primary)] bg-transparent border border-transparent hover:border-[var(--border-strong)] focus:border-[var(--brand)] focus:outline-none rounded px-1.5 py-1 w-full resize-y min-h-[40px]"
+          rows={2}
+        />
+      </div>
 
-      {preview.comparator && preview.threshold != null && (
-        <div className="alert-builder-preview-field">
-          <span className="alert-builder-preview-label">Condition</span>
-          <span className="text-sm font-mono text-[var(--text-primary)]">
-            value {comp} {preview.threshold}
-          </span>
+      <div className="alert-builder-preview-field">
+        <span className="alert-builder-preview-label">Condition</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={preview.comparator || ''}
+            onChange={(e) => onChange('comparator', e.target.value)}
+            className="text-sm font-mono text-[var(--text-primary)] bg-[var(--surface-sunken)] border border-[var(--border-color)] rounded px-1.5 py-1 focus:outline-none focus:border-[var(--brand)]"
+          >
+            <option value="gt">{COMP_LABELS.gt}</option>
+            <option value="gte">{COMP_LABELS.gte}</option>
+            <option value="lt">{COMP_LABELS.lt}</option>
+            <option value="lte">{COMP_LABELS.lte}</option>
+            <option value="eq">{COMP_LABELS.eq}</option>
+            <option value="neq">{COMP_LABELS.neq}</option>
+            <option value="pct_change_gt">{COMP_LABELS.pct_change_gt}</option>
+            <option value="pct_change_lt">{COMP_LABELS.pct_change_lt}</option>
+          </select>
+          <input
+            type="number"
+            value={preview.threshold ?? ''}
+            onChange={(e) => onChange('threshold', e.target.value === '' ? undefined : Number(e.target.value))}
+            placeholder="Threshold"
+            className="text-sm font-mono text-[var(--text-primary)] bg-transparent border-b border-[var(--border-color)] hover:border-[var(--border-strong)] focus:border-[var(--brand)] focus:outline-none px-1 py-0.5 w-24"
+          />
         </div>
-      )}
+      </div>
 
-      {preview.table && (
-        <div className="alert-builder-preview-field">
-          <span className="alert-builder-preview-label">Source</span>
-          <span className="text-sm font-mono text-[var(--text-secondary)]">{preview.table}</span>
-        </div>
-      )}
+      <div className="alert-builder-preview-field">
+        <span className="alert-builder-preview-label">Source</span>
+        <input
+          type="text"
+          value={preview.table || ''}
+          onChange={(e) => onChange('table', e.target.value)}
+          placeholder="Table name"
+          className="text-sm font-mono text-[var(--text-secondary)] bg-transparent border-b border-transparent hover:border-[var(--border-strong)] focus:border-[var(--brand)] focus:outline-none px-1 py-0.5 flex-1"
+        />
+      </div>
 
-      {preview.time_window && (
-        <div className="alert-builder-preview-field">
-          <span className="alert-builder-preview-label">Window</span>
-          <span className="text-sm text-[var(--text-primary)]">{preview.time_window}</span>
-        </div>
-      )}
+      <div className="alert-builder-preview-field">
+        <span className="alert-builder-preview-label">Window</span>
+        <input
+          type="text"
+          value={preview.time_window || ''}
+          onChange={(e) => onChange('time_window', e.target.value)}
+          placeholder="e.g. yesterday, last_7_days"
+          className="text-sm text-[var(--text-primary)] bg-transparent border-b border-transparent hover:border-[var(--border-strong)] focus:border-[var(--brand)] focus:outline-none px-1 py-0.5 flex-1"
+        />
+      </div>
 
-      {preview.frequency && (
-        <div className="alert-builder-preview-field">
-          <Clock size={13} className="text-[var(--text-muted)]" />
-          <span className="text-sm text-[var(--text-primary)]">
-            {preview.frequency.replace(/_/g, ' ')}
-          </span>
-        </div>
-      )}
-
-      {preview.notification_channel && (
-        <div className="alert-builder-preview-field">
-          <Mail size={13} className="text-[var(--text-muted)]" />
-          <span className="text-sm text-[var(--text-primary)] capitalize">
-            {preview.notification_channel}
-            {preview.notification_target ? ` → ${preview.notification_target}` : ''}
-          </span>
-        </div>
-      )}
+      <div className="alert-builder-preview-field items-center">
+        <Mail size={13} className="text-[var(--text-muted)]" />
+        <span className="text-sm text-[var(--text-primary)] capitalize mr-2">Email →</span>
+        <input
+          type="email"
+          value={preview.notification_target || ''}
+          onChange={(e) => onChange('notification_target', e.target.value)}
+          placeholder="Email address"
+          className="text-sm text-[var(--text-primary)] bg-transparent border-b border-transparent hover:border-[var(--border-strong)] focus:border-[var(--brand)] focus:outline-none px-1 py-0.5 flex-1 min-w-[120px]"
+        />
+      </div>
 
       {preview.metric_sql && (
         <details className="mt-2">
@@ -293,7 +318,7 @@ const AlertBuilderPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }
     }
   };
 
-  const isPreviewComplete = !!(preview?.name && preview?.metric_sql && preview?.comparator && preview?.threshold != null);
+  const isPreviewComplete = !!(preview?.name && preview?.metric_sql && preview?.comparator && preview?.threshold != null && preview?.notification_target);
 
   return (
     <DataPageFrame
@@ -479,7 +504,10 @@ const AlertBuilderPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }
               </span>
             </div>
 
-            <PreviewCard preview={preview} />
+            <PreviewCard 
+              preview={preview} 
+              onChange={(key, value) => setPreview(prev => prev ? { ...prev, [key]: value } : null)}
+            />
 
             {isPreviewComplete && !saved && (
               <button

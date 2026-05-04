@@ -18,11 +18,9 @@ CREATE TABLE IF NOT EXISTS public.alerts (
     comparator           text        NOT NULL
         CHECK (comparator IN ('gt','gte','lt','lte','eq','neq','pct_change_gt','pct_change_lt')),
     threshold            numeric     NOT NULL,
-    frequency            text        NOT NULL DEFAULT 'hourly'
-        CHECK (frequency IN ('every_15_min','hourly','daily')),
     notification_channel text        NOT NULL DEFAULT 'email'
         CHECK (notification_channel IN ('email')),
-    notification_target  text,
+    notification_target  text        NOT NULL,
     enabled              boolean     NOT NULL DEFAULT true,
     last_evaluated_at    timestamptz,
     last_fired_at        timestamptz,

@@ -156,9 +156,8 @@ def propose_alert(
     comparator: str,
     threshold: float,
     time_window: str,
-    frequency: str = "hourly",
+    notification_target: str,
     notification_channel: str = "email",
-    notification_target: str | None = None,
 ) -> str:
     """Propose a complete alert definition for user confirmation.
 
@@ -173,17 +172,13 @@ def propose_alert(
         comparator: One of gt, gte, lt, lte, eq, neq, pct_change_gt, pct_change_lt.
         threshold: The threshold value for the comparison.
         time_window: Time window description (e.g. "yesterday", "last_7_days").
-        frequency: Check frequency: every_15_min, hourly, or daily.
         notification_channel: Notification channel (email for v1).
-        notification_target: Email address (optional, defaults to user's email).
+        notification_target: Email address to send the notification to.
     """
     valid_comparators = {"gt", "gte", "lt", "lte", "eq", "neq", "pct_change_gt", "pct_change_lt"}
-    valid_frequencies = {"every_15_min", "hourly", "daily"}
 
     if comparator not in valid_comparators:
         return f"Error: Invalid comparator '{comparator}'. Must be one of: {', '.join(sorted(valid_comparators))}"
-    if frequency not in valid_frequencies:
-        return f"Error: Invalid frequency '{frequency}'. Must be one of: {', '.join(sorted(valid_frequencies))}"
 
     proposal = {
         "name": name,
@@ -193,7 +188,6 @@ def propose_alert(
         "comparator": comparator,
         "threshold": threshold,
         "time_window": time_window,
-        "frequency": frequency,
         "notification_channel": notification_channel,
         "notification_target": notification_target,
     }
@@ -212,8 +206,7 @@ def propose_alert(
         f"  Name: {name}\n"
         f"  Metric: {metric_description}\n"
         f"  Condition: value {symbol} {threshold}\n"
-        f"  Frequency: {frequency}\n"
         f"  Time window: {time_window}\n"
-        f"  Channel: {notification_channel}\n\n"
-        f"Ask the user to confirm saving this alert."
+        f"  Target: {notification_target}\n\n"
+        f"Instruct the user to review the details in the preview card, make any desired edits, and click the 'Save Alert' button directly. You cannot save the alert yourself."
     )

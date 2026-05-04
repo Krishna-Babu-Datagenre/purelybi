@@ -30,12 +30,6 @@ class Comparator(str, Enum):
     pct_change_lt = "pct_change_lt"
 
 
-class Frequency(str, Enum):
-    every_15_min = "every_15_min"
-    hourly = "hourly"
-    daily = "daily"
-
-
 # ---------------------------------------------------------------------------
 # Alert definition (structured output from builder agent)
 # ---------------------------------------------------------------------------
@@ -57,9 +51,10 @@ class AlertDefinition(BaseModel):
     time_window: str = Field(
         ..., description='e.g. "yesterday", "last_7_days"'
     )
-    frequency: Frequency = Frequency.hourly
     notification_channel: Literal["email"] = "email"
-    notification_target: EmailStr | None = None
+    notification_target: EmailStr = Field(
+        ..., description="Email address to notify"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +73,6 @@ class AlertUpdate(BaseModel):
     """Request body for PATCH /api/alerts/{id}."""
 
     name: str | None = Field(default=None, min_length=1)
-    frequency: Frequency | None = None
     enabled: bool | None = None
     notification_target: str | None = None
 
@@ -93,9 +87,7 @@ class AlertOut(BaseModel):
     sql_query: str
     comparator: Comparator
     threshold: float
-    frequency: Frequency
-    notification_channel: str
-    notification_target: str | None = None
+    notification_target: str
     enabled: bool
     last_evaluated_at: datetime | None = None
     last_fired_at: datetime | None = None

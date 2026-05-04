@@ -32,7 +32,6 @@ from .alerts import (
     AlertRunOut,
     AlertUpdate,
     Comparator,
-    Frequency,
 )
 
 __all__ = [
@@ -63,5 +62,4 @@ __all__ = [
     "AlertRunOut",
     "AlertUpdate",
     "Comparator",
-    "Frequency",
 ]

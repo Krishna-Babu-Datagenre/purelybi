@@ -153,10 +153,6 @@ const DetailPanel = ({ alert }: { alert: ApiAlert }) => {
               value {comp} {alert.threshold}
             </span>
           </div>
-          <div className="alerts-meta-row">
-            <span className="alerts-meta-label">Frequency</span>
-            <span className="text-sm text-[var(--text-primary)] capitalize">{alert.frequency.replace(/_/g, ' ')}</span>
-          </div>
           {(defn.metric_description as string) && (
             <div className="alerts-meta-row">
               <span className="alerts-meta-label">Metric</span>
@@ -316,7 +312,7 @@ const AlertCard = ({
 
       <div className="alerts-card-bottom">
         <span className="text-xs text-[var(--text-secondary)]">
-          {comp} {alert.threshold} · {alert.frequency.replace(/_/g, ' ')}
+          {comp} {alert.threshold}
         </span>
         <StatusBadge status={alert.last_state} />
       </div>

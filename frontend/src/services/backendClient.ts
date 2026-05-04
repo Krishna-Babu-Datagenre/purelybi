@@ -663,7 +663,6 @@ export interface ApiAlert {
   sql_query: string;
   comparator: string;
   threshold: number;
-  frequency: string;
   notification_channel: string;
   notification_target?: string | null;
   enabled: boolean;
@@ -690,7 +689,6 @@ export interface AlertCreatePayload {
 
 export interface AlertUpdatePayload {
   name?: string;
-  frequency?: string;
   enabled?: boolean;
   notification_target?: string;
 }

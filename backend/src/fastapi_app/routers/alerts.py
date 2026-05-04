@@ -6,7 +6,7 @@ Endpoints
 POST   /api/alerts                    – create a new alert
 GET    /api/alerts                    – list user's alerts
 GET    /api/alerts/{id}               – get a single alert
-PATCH  /api/alerts/{id}               – update name, frequency, enabled, target
+PATCH  /api/alerts/{id}               – update name, enabled, target
 DELETE /api/alerts/{id}               – delete an alert (cascades to runs & notifications)
 GET    /api/alerts/{id}/runs          – run history (last N runs)
 POST   /api/alerts/{id}/test          – synchronous one-off evaluation (no notification)
@@ -124,7 +124,7 @@ def update_alert_endpoint(
     body: AlertUpdate,
     user: UserProfile = Depends(get_current_user_dep),
 ):
-    """Update alert name, frequency, enabled, or notification target."""
+    """Update alert name, enabled, or notification target."""
     result = update_alert(user_id=user.id, alert_id=alert_id, patch=body)
     if result is None:
         raise HTTPException(
