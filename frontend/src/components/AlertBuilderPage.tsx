@@ -7,7 +7,6 @@ import {
   AlertTriangle,
   Sparkles,
   Bell,
-  Clock,
   Mail,
   Wrench,
   ChevronDown,
@@ -77,8 +76,6 @@ const PreviewCard = ({ preview, onChange }: { preview: AlertPreview | null, onCh
       </div>
     );
   }
-
-  const comp = COMP_LABELS[preview.comparator ?? ''] ?? preview.comparator;
 
   return (
     <div className="alert-builder-preview-card">
