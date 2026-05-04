@@ -205,7 +205,15 @@ async def _stream_one_graph_turn(
     stream_iter = iter(stream)
 
     while True:
-        result = await asyncio.to_thread(_next_item, stream_iter)
+        # Run the next iteration in a thread, but allow timeouts to yield keep-alive pings
+        task = asyncio.create_task(asyncio.to_thread(_next_item, stream_iter))
+        while not task.done():
+            done, pending = await asyncio.wait([task], timeout=10.0)
+            if not done:
+                yield _sse("ping", {})
+                await asyncio.sleep(0.01)
+        
+        result = task.result()
         if result is _DONE:
             break
         message_chunk, metadata = result

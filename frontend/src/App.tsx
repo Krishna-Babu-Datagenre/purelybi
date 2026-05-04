@@ -14,6 +14,8 @@ import DataManagePage from './components/data/DataManagePage';
 import DataRawTablesPage from './components/data/DataRawTablesPage';
 import MetadataReviewPage from './components/data/MetadataReviewPage';
 import HomePage from './components/HomePage';
+import AlertsPage from './components/AlertsPage';
+import AlertBuilderPage from './components/AlertBuilderPage';
 import DashboardBuilderEmptyState from './components/DashboardBuilderEmptyState';
 import { useDashboardStore } from './store/useDashboardStore';
 import { useAuthStore } from './store/useAuthStore';
@@ -60,6 +62,8 @@ const App = () => {
     if (navigationPage === 'data-manage') return 'Manage connections';
     if (navigationPage === 'data-raw-tables') return 'View raw tables';
     if (navigationPage === 'metadata') return 'Metadata review';
+    if (navigationPage === 'alerts') return 'Manage alerts';
+    if (navigationPage === 'alerts-create') return 'Create alert';
     return undefined;
   }, [navigationPage, hasDashboard, dashboard]);
 
@@ -144,7 +148,9 @@ const App = () => {
                   navigationPage === 'data-manage' ||
                   navigationPage === 'data-raw-tables' ||
                   navigationPage === 'home' ||
-                  navigationPage === 'dashboard-ai'
+                  navigationPage === 'dashboard-ai' ||
+                  navigationPage === 'alerts' ||
+                  navigationPage === 'alerts-create'
                 ? { paddingLeft: 0, paddingRight: 0 }
                 : { paddingLeft: '1.5rem', paddingRight: '1.5rem' }
           }
@@ -281,25 +287,20 @@ const App = () => {
             />
           )}
           {navigationPage === 'alerts' && (
-            <div
-              className="main-empty-state transition-[left] duration-300"
-              style={{
-                position: 'fixed',
-                top: 'var(--topbar-height)',
-                left: sidebarCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
-                right: 0,
-                bottom: 0,
-                display: 'grid',
-                placeItems: 'center',
-                padding: '1.5rem',
-              }}
-            >
-              <div className="flex flex-col items-center justify-center text-center max-w-sm">
-                <h2 className="text-lg font-semibold text-[var(--text-primary)] tracking-tight">
-                  COMING SOON
-                </h2>
-              </div>
-            </div>
+            <AlertsPage
+              sidebarCollapsed={sidebarCollapsed}
+              chatOpen={chatOpen}
+              chatModal={chatModal}
+              chatWidthPx={chatWidthPx}
+            />
+          )}
+          {navigationPage === 'alerts-create' && (
+            <AlertBuilderPage
+              sidebarCollapsed={sidebarCollapsed}
+              chatOpen={chatOpen}
+              chatModal={chatModal}
+              chatWidthPx={chatWidthPx}
+            />
           )}
           {navigationPage === 'data-connect' && (
             <DataConnectPage

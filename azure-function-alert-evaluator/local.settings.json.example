@@ -1,0 +1,16 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "SUPABASE_URL": "",
+    "SUPABASE_SERVICE_ROLE_KEY": "",
+    "AZURE_STORAGE_CONNECTION_STRING": "",
+    "BLOB_CONTAINER_NAME": "raw",
+    "USER_DATA_BLOB_PREFIX": "user-data",
+    "DUCKDB_MEMORY_LIMIT": "256MB",
+    "ALERT_SQL_TIMEOUT_SECONDS": "30",
+    "ACS_CONNECTION_STRING": "",
+    "ALERT_EMAIL_SENDER": "alerts@purelybi.com"
+  }
+}

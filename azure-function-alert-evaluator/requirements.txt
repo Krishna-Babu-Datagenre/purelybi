@@ -1,0 +1,5 @@
+supabase
+duckdb
+azure-storage-blob
+certifi
+azure-communication-email

@@ -8,6 +8,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Bell,
+  BellPlus,
+  List,
   MoreVertical,
   Trash2,
   Copy,
@@ -549,23 +551,43 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
         {!collapsed && <div className="sidebar-section-title sidebar-section-title--purple" style={{ marginTop: '1.25rem' }}>Alerts</div>}
         <div className={collapsed ? 'flex flex-col items-center gap-1.5' : 'space-y-0.5'} style={!collapsed ? { marginTop: '0.5rem' } : undefined}>
           {collapsed ? (
-            <button
-              type="button"
-              onClick={() => setNavigationPage('alerts')}
-              className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'alerts' ? 'sidebar-item--active' : ''}`}
-              title="Alerts"
-            >
-              <Bell size={20} />
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setNavigationPage('alerts-create')}
+                className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'alerts-create' ? 'sidebar-item--active' : ''}`}
+                title="Create Alert"
+              >
+                <BellPlus size={20} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setNavigationPage('alerts')}
+                className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'alerts' ? 'sidebar-item--active' : ''}`}
+                title="Manage Alerts"
+              >
+                <Bell size={20} />
+              </button>
+            </>
           ) : (
-            <button
-              type="button"
-              onClick={() => setNavigationPage('alerts')}
-              className={`sidebar-item ${navigationPage === 'alerts' ? 'sidebar-item--active' : ''}`}
-            >
-              <Bell size={20} />
-              <span className="truncate">Alerts</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => setNavigationPage('alerts-create')}
+                className={`sidebar-item ${navigationPage === 'alerts-create' ? 'sidebar-item--active' : ''}`}
+              >
+                <BellPlus size={20} />
+                <span className="truncate">Create Alert</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setNavigationPage('alerts')}
+                className={`sidebar-item ${navigationPage === 'alerts' ? 'sidebar-item--active' : ''}`}
+              >
+                <Bell size={20} />
+                <span className="truncate">Manage Alerts</span>
+              </button>
+            </>
           )}
         </div>
       </div>

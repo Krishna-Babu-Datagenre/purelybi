@@ -653,6 +653,139 @@ export async function uploadLocalFiles(
   return res.json() as Promise<UserConnectorConfig>;
 }
 
+/* ── Alerts ── */
+
+export interface ApiAlert {
+  id: string;
+  name: string;
+  description?: string | null;
+  definition: Record<string, unknown>;
+  sql_query: string;
+  comparator: string;
+  threshold: number;
+  frequency: string;
+  notification_channel: string;
+  notification_target?: string | null;
+  enabled: boolean;
+  last_evaluated_at?: string | null;
+  last_fired_at?: string | null;
+  last_state?: 'ok' | 'firing' | 'error' | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiAlertRun {
+  id: string;
+  evaluated_at: string;
+  status: 'ok' | 'firing' | 'error';
+  observed_value?: number | null;
+  error_message?: string | null;
+}
+
+export interface AlertCreatePayload {
+  name: string;
+  description?: string;
+  definition: Record<string, unknown>;
+}
+
+export interface AlertUpdatePayload {
+  name?: string;
+  frequency?: string;
+  enabled?: boolean;
+  notification_target?: string;
+}
+
+/** GET /api/alerts */
+export function listAlerts(): Promise<ApiAlert[]> {
+  return request<ApiAlert[]>('/api/alerts');
+}
+
+/** GET /api/alerts/{id} */
+export function getAlert(alertId: string): Promise<ApiAlert> {
+  return request<ApiAlert>(`/api/alerts/${alertId}`);
+}
+
+/** POST /api/alerts */
+export function createAlert(body: AlertCreatePayload): Promise<ApiAlert> {
+  return request<ApiAlert>('/api/alerts', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** PATCH /api/alerts/{id} */
+export function updateAlert(alertId: string, body: AlertUpdatePayload): Promise<ApiAlert> {
+  return request<ApiAlert>(`/api/alerts/${alertId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+/** DELETE /api/alerts/{id} */
+export async function deleteAlert(alertId: string): Promise<void> {
+  await request<void>(`/api/alerts/${alertId}`, { method: 'DELETE' });
+}
+
+/** GET /api/alerts/{id}/runs */
+export function listAlertRuns(alertId: string, limit = 50): Promise<ApiAlertRun[]> {
+  return request<ApiAlertRun[]>(`/api/alerts/${alertId}/runs?limit=${limit}`);
+}
+
+/** POST /api/alerts/{id}/test */
+export function testAlert(alertId: string): Promise<ApiAlertRun> {
+  return request<ApiAlertRun>(`/api/alerts/${alertId}/test`, { method: 'POST' });
+}
+
+/** POST /api/alerts/builder/stream — SSE stream for alert builder agent */
+export async function streamAlertBuilder(
+  sessionId: string,
+  message: string,
+  onEvent: (event: string, data: unknown) => void,
+): Promise<void> {
+  await ensureAccessTokenFresh();
+  const token = useAuthStore.getState().accessToken;
+
+  const res = await fetch(`${BASE_URL}/api/alerts/builder/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ session_id: sessionId, message }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Builder stream failed: ${res.status}`);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) return;
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+
+    let currentEvent = '';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          onEvent(currentEvent, data);
+        } catch { /* non-JSON line */ }
+        currentEvent = '';
+      }
+    }
+  }
+}
+
 /* ── Health ── */
 
 export function healthCheck(): Promise<{ status: string }> {

@@ -102,6 +102,7 @@ export type ShellPage =
   | 'dashboard'
   | 'dashboard-ai'
   | 'alerts'
+  | 'alerts-create'
   | 'data-connect'
   | 'data-manage'
   | 'data-raw-tables'
