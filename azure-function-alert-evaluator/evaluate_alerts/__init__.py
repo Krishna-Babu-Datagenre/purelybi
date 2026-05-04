@@ -71,10 +71,29 @@ def _discover_views(tenant_id: str) -> dict[str, str]:
         if parent:
             dir_files.setdefault(parent, []).append(parts[-1])
 
+    # Detect Hive-partitioned directory trees
+    hive_roots = set()
+    hive_dirs = set()
+    for dir_path in list(dir_files.keys()):
+        parts = dir_path.split("/")
+        for i, part in enumerate(parts):
+            if _HIVE_SEGMENT_RE.match(part):
+                root = "/".join(parts[:i])
+                if root:
+                    hive_roots.add(root)
+                    hive_dirs.add(dir_path)
+                break
+
     base_url = f"azure://{CONTAINER}/{prefix}"
     views: dict[str, str] = {}
 
+    for root in sorted(hive_roots):
+        view_name = root.replace("/", "_").replace("-", "_")
+        views[view_name] = f"{base_url}{root}/**/*.parquet"
+
     for dir_path in sorted(dir_files):
+        if dir_path in hive_dirs or any(dir_path.startswith(r + "/") for r in hive_roots):
+            continue
         view_name = dir_path.replace("/", "_").replace("-", "_")
         views[view_name] = f"{base_url}{dir_path}/*.parquet"
 
@@ -148,7 +167,21 @@ def _send_email(to: str, subject: str, body_html: str) -> str | None:
     try:
         from azure.communication.email import EmailClient
 
-        client = EmailClient.from_connection_string(ACS_CONN_STR)
+        # Fix missing '=' padding on the base64 accesskey which causes binascii.Error
+        conn_str = ACS_CONN_STR
+        parts = conn_str.split(";")
+        fixed_parts = []
+        for part in parts:
+            if part.lower().startswith("accesskey="):
+                key = part.split("=", 1)[1]
+                missing_padding = len(key) % 4
+                if missing_padding:
+                    key += "=" * (4 - missing_padding)
+                part = f"accesskey={key}"
+            fixed_parts.append(part)
+        conn_str = ";".join(fixed_parts)
+
+        client = EmailClient.from_connection_string(conn_str)
         message = {
             "senderAddress": EMAIL_SENDER,
             "recipients": {"to": [{"address": to}]},
