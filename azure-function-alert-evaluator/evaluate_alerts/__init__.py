@@ -16,8 +16,7 @@ import logging
 import os
 import re
 import sys
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import azure.functions as func
 import duckdb
