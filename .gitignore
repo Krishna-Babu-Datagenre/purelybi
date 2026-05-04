@@ -24,11 +24,11 @@ frontend/ui-inspirations/*
 
 # workspace
 .cursor/*
-.github/*
 .agents/*
 GEMINI.md
 AGENTS.md
 
+.github/skills/*
 frontend/.github/*
 backend/.github/*
 frontend/.cursor/*

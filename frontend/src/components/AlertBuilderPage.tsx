@@ -167,7 +167,6 @@ const AlertBuilderPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }
   const [sessionId] = useState(() => crypto.randomUUID());
 
   const [streamingToolCalls, setStreamingToolCalls] = useState<StreamingToolCall[]>([]);
-  const [currentTurnToolResults, setCurrentTurnToolResults] = useState<ToolCallResult[]>([]);
   const [expandedAgentActivity, setExpandedAgentActivity] = useState<Record<number, boolean>>({});
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -204,7 +203,6 @@ const AlertBuilderPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
     setStreaming(true);
     setStreamingToolCalls([]);
-    setCurrentTurnToolResults([]);
 
     let assistantText = '';
     let needsPostToolSeparator = false;
@@ -241,7 +239,6 @@ const AlertBuilderPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }
           setStreamingToolCalls((prev) => prev.filter((tc) => tc.id !== d.tool_call_id));
           
           const newResult = { tool_name: d.tool_name, content: d.result };
-          setCurrentTurnToolResults((prev) => [...prev, newResult]);
           setMessages((msgs) => {
             const newMsgs = [...msgs];
             const lastMsg = newMsgs[newMsgs.length - 1];
@@ -265,7 +262,6 @@ const AlertBuilderPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }
     } finally {
       setStreaming(false);
       setStreamingToolCalls([]);
-      setCurrentTurnToolResults([]);
     }
   }, [input, streaming, sessionId]);
 

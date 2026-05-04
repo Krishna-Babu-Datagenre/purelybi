@@ -1,0 +1,41 @@
+# Deploys the alert evaluator timer function.
+#
+# Prerequisites in Azure:
+#   - Linux Function App (Python 3.11)
+#   - App settings: SUPABASE_*, AZURE_STORAGE_CONNECTION_STRING, BLOB_CONTAINER_NAME,
+#     USER_DATA_BLOB_PREFIX, DUCKDB_MEMORY_LIMIT, ALERT_SQL_TIMEOUT_SECONDS,
+#     ACS_CONNECTION_STRING, ALERT_EMAIL_SENDER
+#
+# GitHub:
+#   Secrets:  AZURE_FUNCTIONAPP_ALERT_EVALUATOR_PUBLISH_PROFILE
+#   Variables: AZURE_FUNCTIONAPP_ALERT_EVALUATOR_NAME
+
+name: Deploy Azure Function — alert evaluator
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "azure-function-alert-evaluator/**"
+      - ".github/workflows/deploy-azure-function-alert-evaluator.yml"
+  workflow_dispatch:
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: azure-function-alert-evaluator
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ vars.AZURE_FUNCTIONAPP_ALERT_EVALUATOR_NAME }}
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_ALERT_EVALUATOR_PUBLISH_PROFILE }}
+          respect-funcignore: true
+          scm-do-build-during-deployment: true

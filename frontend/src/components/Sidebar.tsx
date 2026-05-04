@@ -9,7 +9,6 @@ import {
   ChevronRight,
   Bell,
   BellPlus,
-  List,
   MoreVertical,
   Trash2,
   Copy,
