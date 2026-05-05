@@ -189,7 +189,9 @@ def _send_email(to: str, subject: str, body_html: str) -> str | None:
         }
         poller = client.begin_send(message)
         result = poller.result()
-        return result.message_id
+        if isinstance(result, dict):
+            return result.get("messageId") or result.get("id")
+        return getattr(result, "message_id", getattr(result, "id", None))
     except Exception:
         logger.exception("Failed sending alert email to %s", to)
         return None
