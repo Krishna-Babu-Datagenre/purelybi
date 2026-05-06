@@ -7,6 +7,7 @@ POST /api/auth/signup          – register with email + password
 POST /api/auth/signin          – login with email + password
 POST /api/auth/refresh         – rotate access token using refresh token
 GET  /api/auth/google          – get Google OAuth redirect URL
+GET  /api/auth/credits         – get current AI credits balance (lightweight)
 GET  /api/auth/me              – get current user profile from token
 DELETE /api/auth/account       – permanently delete the current user (auth + profile)
 """
@@ -31,6 +32,7 @@ from fastapi_app.services.auth_service import (
     delete_user_account,
     get_current_user,
     get_google_oauth_url,
+    get_user_credits,
     refresh_with_refresh_token,
     sign_in_with_email,
     sign_up_with_email,
@@ -101,6 +103,17 @@ async def google_oauth(redirect_to: str = Query(default=None)):
     """Return the Google OAuth URL for the frontend to redirect to."""
     url = get_google_oauth_url(redirect_to=redirect_to)
     return {"url": url}
+
+
+@router.get("/credits")
+async def credits(authorization: str = Header(...)):
+    """Return the AI credits balance for the currently authenticated user.
+
+    Lightweight endpoint — bypasses the profile cache so the frontend
+    always gets the freshest value right after an agent turn.
+    """
+    balance = get_user_credits(access_token=parse_bearer_token(authorization))
+    return {"ai_credits_balance": balance}
 
 
 @router.get("/me", response_model=UserProfile)

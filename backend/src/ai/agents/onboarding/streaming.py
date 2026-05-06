@@ -21,6 +21,7 @@ from ai.agents.onboarding.infra.stores import (
     prune_expired_oauth_states,
 )
 from ai.tools.onboarding import UI_TOOL_NAMES
+from ai.callbacks import AICreditTrackerCallback
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +122,12 @@ async def stream_onboarding(
     prune_expired_oauth_states()
     set_onboarding_context(ctx)
     agent = get_or_create_onboarding_agent(ctx.user_id, ctx.thread_id)
+    
+    credit_callback = AICreditTrackerCallback(user_id=ctx.user_id, session_id=ctx.thread_id)
     config = {
         "configurable": {"thread_id": thread_id_for_graph(ctx)},
         "recursion_limit": 50,
+        "callbacks": [credit_callback]
     }
 
     yield _sse("start", {"status": "streaming"})
@@ -243,4 +247,5 @@ async def stream_onboarding(
         logger.exception("Onboarding stream failed")
         yield _sse("error", {"detail": str(exc)})
     finally:
+        await credit_callback.flush_and_deduct()
         clear_onboarding_context()

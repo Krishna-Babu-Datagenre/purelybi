@@ -78,6 +78,12 @@ export function getMe(accessToken: string): Promise<UserProfile> {
   return requestWithAuth<UserProfile>('/api/auth/me', accessToken);
 }
 
+/** GET /api/auth/credits — lightweight fetch of just the AI credits balance */
+export async function fetchCredits(accessToken: string): Promise<number> {
+  const data = await requestWithAuth<{ ai_credits_balance: number }>('/api/auth/credits', accessToken);
+  return data.ai_credits_balance;
+}
+
 /** POST /api/auth/refresh — new access + refresh tokens (Supabase rotates refresh_token) */
 export function refreshTokens(refreshToken: string): Promise<AuthResponse> {
   return request<AuthResponse>('/api/auth/refresh', {

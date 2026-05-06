@@ -7,7 +7,9 @@ import ChatDrawer from './components/ChatDrawer';
 import LoginPage from './components/LoginPage';
 import DateFilterBar from './components/DateFilterBar';
 import FilterPane from './components/FilterPane/FilterPane';
-import { LayoutDashboard, Check, X, Loader2 } from 'lucide-react';
+import { LayoutDashboard, Check, X, Loader2, Users, AlertCircle } from 'lucide-react';
+import OutOfCreditsModal from './components/OutOfCreditsModal';
+import DashboardShareModal from './components/DashboardShareModal';
 
 import DataConnectPage from './components/data/DataConnectPage';
 import DataManagePage from './components/data/DataManagePage';
@@ -26,6 +28,9 @@ const App = () => {
   const accessToken = useAuthStore((s) => s.accessToken);
   const validating = useAuthStore((s) => s.validating);
   const validateStoredToken = useAuthStore((s) => s.validateStoredToken);
+  const user = useAuthStore((s) => s.user);
+
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   const dashboard = useDashboardStore((s) =>
     s.activeDashboardId ? s.dashboards[s.activeDashboardId] ?? null : null,
@@ -122,6 +127,24 @@ const App = () => {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
+      {/* Trial Warning */}
+      {user?.subscription_tier?.tier_name === 'Free' && user?.trial_ends_at && (
+        <div 
+          className="fixed z-50 flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500/20 to-orange-500/20 border-b border-amber-500/30 px-4 py-1.5 text-xs text-amber-200 backdrop-blur-sm w-full"
+          style={{ 
+            top: 'var(--topbar-height)', 
+            left: sidebarCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
+            width: `calc(100% - ${sidebarCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)'})`
+          }}
+        >
+          <AlertCircle size={14} className="shrink-0" />
+          <span className="font-medium">
+            Your Free trial ends on {new Date(user.trial_ends_at).toLocaleDateString()}.
+          </span>
+          <a href="#" className="underline hover:text-amber-100 font-semibold ml-1">Upgrade now</a>
+        </div>
+      )}
+
       {/* Topbar */}
       <Topbar
         sidebarCollapsed={sidebarCollapsed}
@@ -135,8 +158,8 @@ const App = () => {
         style={{
           marginLeft: sidebarCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
           marginRight: chatOpen && !chatModal ? chatWidthPx : 0,
-          marginTop: 'var(--topbar-height)',
-          height: 'calc(100vh - var(--topbar-height))',
+          marginTop: (user?.subscription_tier?.tier_name === 'Free' && user?.trial_ends_at) ? 'calc(var(--topbar-height) + 32px)' : 'var(--topbar-height)',
+          height: (user?.subscription_tier?.tier_name === 'Free' && user?.trial_ends_at) ? 'calc(100vh - var(--topbar-height) - 32px)' : 'calc(100vh - var(--topbar-height))',
         }}
       >
         <main
@@ -242,13 +265,22 @@ const App = () => {
                             </button>
                           </>
                         ) : (
-                          <button
-                            onClick={() => setEditMode(true)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] rounded-md transition-colors"
-                          >
-                            <LayoutDashboard size={16} />
-                            Edit Layout
-                          </button>
+                          <>
+                            <button
+                              onClick={() => setEditMode(true)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] rounded-md transition-colors"
+                            >
+                              <LayoutDashboard size={16} />
+                              Edit Layout
+                            </button>
+                            <button
+                              onClick={() => setShareModalOpen(true)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] rounded-md transition-colors"
+                            >
+                              <Users size={16} />
+                              Share
+                            </button>
+                          </>
                         )
                       )}
                     </div>
@@ -339,6 +371,15 @@ const App = () => {
 
       {/* Chat: right-edge drawer (resizable) or modal pop-out */}
       <ChatDrawer />
+
+      <OutOfCreditsModal />
+      {shareModalOpen && dashboard && (
+        <DashboardShareModal
+          dashboardId={dashboard.meta.id}
+          dashboardName={dashboard.meta.name}
+          onClose={() => setShareModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

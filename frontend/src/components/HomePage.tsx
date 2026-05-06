@@ -82,8 +82,10 @@ const HomePage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: HomePa
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <button
               type="button"
+              disabled={user && user.active_connector_count !== undefined && user.subscription_tier ? user.active_connector_count >= user.subscription_tier.max_data_sources : false}
+              title={user && user.active_connector_count !== undefined && user.subscription_tier && user.active_connector_count >= user.subscription_tier.max_data_sources ? `You have reached your limit of ${user.subscription_tier.max_data_sources} active data sources on the ${user.subscription_tier.tier_name} plan.` : undefined}
               onClick={() => setNavigationPage('data-connect')}
-              className="group flex flex-col items-start gap-3 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 text-left cursor-pointer transition-colors duration-200 hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand)] motion-reduce:transition-none"
+              className="group flex flex-col items-start gap-3 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 text-left cursor-pointer transition-colors duration-200 hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand)] motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[var(--border-default)] disabled:hover:bg-[var(--bg-surface)]"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--brand-dim)] text-[var(--brand)]">
                 <Plug className="h-5 w-5" aria-hidden />

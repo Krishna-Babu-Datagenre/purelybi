@@ -37,7 +37,7 @@ class EmailConfirmationRequired(Exception):
 
 
 def _build_user_profile(
-    user: dict, profile_row: dict | None = None
+    user: dict, profile_row: dict | None = None, dashboard_count: int = 0, active_connector_count: int = 0
 ) -> UserProfile:
     """Build a UserProfile from Supabase auth user + optional profiles row."""
     meta = user.get("user_metadata") or {}
@@ -49,6 +49,11 @@ def _build_user_profile(
         avatar_url=(profile_row or {}).get("avatar_url")
         or meta.get("avatar_url"),
         role=(profile_row or {}).get("role", UserRole.client),
+        subscription_tier=(profile_row or {}).get("subscription_tier", None),
+        ai_credits_balance=(profile_row or {}).get("ai_credits_balance", 0),
+        trial_ends_at=(profile_row or {}).get("trial_ends_at", None),
+        dashboard_count=dashboard_count,
+        active_connector_count=active_connector_count,
     )
 
 
@@ -108,7 +113,7 @@ def sign_up_with_email(
     # Fetch the freshly-created profile row (trigger should have created it)
     profile_rows = (
         supabase.table("profiles")
-        .select("full_name, avatar_url, role")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
         .eq("id", user.id)
         .limit(1)
         .execute()
@@ -147,7 +152,7 @@ def sign_in_with_email(email: str, password: str) -> AuthResponse:
 
     profile_rows = (
         supabase.table("profiles")
-        .select("full_name, avatar_url, role")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
         .eq("id", user.id)
         .limit(1)
         .execute()
@@ -197,7 +202,7 @@ def refresh_with_refresh_token(refresh_token: str) -> AuthResponse:
 
     profile_rows = (
         supabase.table("profiles")
-        .select("full_name, avatar_url, role")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
         .eq("id", user_dict["id"])
         .limit(1)
         .execute()
@@ -275,19 +280,63 @@ def get_current_user(access_token: str) -> UserProfile:
     admin = get_supabase_admin_client()
     profile_rows = (
         admin.table("profiles")
-        .select("full_name, avatar_url, role")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
         .eq("id", user_id)
         .limit(1)
         .execute()
-    ).data
-    profile_row = profile_rows[0] if profile_rows else None
+    )
+    profile_row = profile_rows.data[0] if profile_rows.data else None
+
+    # Fetch resource counts to hydrate the frontend limits UI
+    db_res = admin.table("dashboards").select("id", count="exact").eq("user_id", user_id).execute()
+    dashboard_count = db_res.count if db_res.count is not None else 0
+    
+    conn_res = admin.table("user_connector_configs").select("id", count="exact").eq("user_id", user_id).eq("is_active", True).execute()
+    active_connector_count = conn_res.count if conn_res.count is not None else 0
 
     _profile_cache[user_id] = (profile_row or {}, now)
 
     return _build_user_profile(
         user=user.__dict__ if hasattr(user, "__dict__") else dict(user),
         profile_row=profile_row,
+        dashboard_count=dashboard_count,
+        active_connector_count=active_connector_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Get AI credits balance (lightweight, cache-free)
+# ---------------------------------------------------------------------------
+
+
+def get_user_credits(access_token: str) -> int:
+    """Return the current AI credits balance for the authenticated user.
+
+    Unlike ``get_current_user`` this deliberately **bypasses** the profile
+    cache so the frontend always receives the freshest value after an agent
+    turn deducts credits.
+    """
+    supabase = get_supabase_client()
+    try:
+        res = supabase.auth.get_user(access_token)
+    except AuthApiError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+
+    user_id = str(res.user.id)
+    admin = get_supabase_admin_client()
+    row = (
+        admin.table("profiles")
+        .select("ai_credits_balance")
+        .eq("id", user_id)
+        .limit(1)
+        .execute()
+    )
+    if row.data:
+        return int(row.data[0].get("ai_credits_balance", 0))
+    return 0
 
 
 # ---------------------------------------------------------------------------

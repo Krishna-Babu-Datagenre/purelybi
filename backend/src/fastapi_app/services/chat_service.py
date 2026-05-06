@@ -26,6 +26,7 @@ from ai.tools.sql.charts import (
     set_discovered_tables,
     set_session_context,
 )
+from ai.callbacks import AICreditTrackerCallback
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,11 @@ async def stream_agent_response(
         yield _sse("error", {"detail": str(exc)})
         return
 
-    config = {"configurable": {"thread_id": session_id}}
+    credit_callback = AICreditTrackerCallback(user_id=tenant_id, session_id=session_id)
+    config = {
+        "configurable": {"thread_id": session_id},
+        "callbacks": [credit_callback]
+    }
 
     # Set session context so chart tools can locate stored DataFrames and tenant views
     set_session_context(session_id)
@@ -499,6 +504,7 @@ async def stream_agent_response(
         )
         yield _sse("error", {"detail": str(exc)})
     finally:
+        await credit_callback.flush_and_deduct()
         if dash_ctx_token is not None:
             reset_dashboard_tool_context(dash_ctx_token)
 
@@ -535,12 +541,19 @@ def get_conversation_history(
     result: list[dict[str, Any]] = []
     for msg in messages:
         role = msg.type  # "human", "ai", "tool"
+        
+        # Ensure content is always a string
+        content = msg.content
+        if isinstance(content, list):
+            text_parts = [part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"]
+            content = "".join(text_parts)
+
         if role == "human":
-            result.append({"role": "user", "content": msg.content})
+            result.append({"role": "user", "content": content})
         elif role == "ai":
             entry_dict: dict[str, Any] = {
                 "role": "assistant",
-                "content": msg.content or None,
+                "content": content or None,
             }
             tool_calls = getattr(msg, "tool_calls", None)
             if tool_calls:
@@ -556,12 +569,12 @@ def get_conversation_history(
         elif role == "tool":
             tool_entry: dict[str, Any] = {
                 "role": "tool",
-                "content": msg.content,
+                "content": content,
                 "tool_call_id": getattr(msg, "tool_call_id", None),
                 "tool_name": getattr(msg, "name", None),
             }
             # Attach chart if applicable
-            chart_data = _try_extract_chart(msg.content)
+            chart_data = _try_extract_chart(content)
             if chart_data:
                 chart_entry: dict[str, Any] = {
                     "tool_call_id": getattr(msg, "tool_call_id", None),

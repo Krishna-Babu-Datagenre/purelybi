@@ -57,6 +57,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
+    if (res.status === 402) {
+      window.dispatchEvent(new CustomEvent('out-of-credits'));
+    }
     const body = await res.json().catch(() => ({}));
     const detail = typeof body.detail === 'string' ? body.detail : body.detail?.msg ?? body.message;
     throw new Error(detail ?? `Request failed: ${res.status} ${res.statusText}`);
@@ -87,6 +90,9 @@ async function requestNoContent(path: string, init?: RequestInit): Promise<void>
   }
 
   if (!res.ok) {
+    if (res.status === 402) {
+      window.dispatchEvent(new CustomEvent('out-of-credits'));
+    }
     const body = await res.json().catch(() => ({}));
     const detail = typeof body.detail === 'string' ? body.detail : body.detail?.msg ?? body.message;
     throw new Error(detail ?? `Request failed: ${res.status} ${res.statusText}`);
@@ -383,6 +389,27 @@ export function persistWidgetLayouts(
       method: 'PUT',
       body: JSON.stringify({ layouts }),
     },
+  );
+}
+
+/** POST /api/dashboards/{id}/share */
+export function shareDashboard(dashboardId: string, email: string, permission_tier: string): Promise<void> {
+  return requestNoContent(`/api/dashboards/${encodeURIComponent(dashboardId)}/share`, {
+    method: 'POST',
+    body: JSON.stringify({ email, permission_tier }),
+  });
+}
+
+/** GET /api/dashboards/{id}/shares */
+export function listDashboardShares(dashboardId: string): Promise<Array<any>> {
+  return request<Array<any>>(`/api/dashboards/${encodeURIComponent(dashboardId)}/shares`);
+}
+
+/** DELETE /api/dashboards/{id}/shares/{share_id} */
+export function revokeDashboardShare(dashboardId: string, shareId: string): Promise<void> {
+  return requestNoContent(
+    `/api/dashboards/${encodeURIComponent(dashboardId)}/shares/${encodeURIComponent(shareId)}`,
+    { method: 'DELETE' },
   );
 }
 

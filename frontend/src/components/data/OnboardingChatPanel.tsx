@@ -7,6 +7,7 @@ import {
   streamOnboardingChat,
   type OnboardingUiBlock,
 } from '../../services/onboardingApi';
+import { useAuthStore } from '../../store/useAuthStore';
 
 /** Default value for `<select>` when agent sends string or `{ value, label }`. */
 function selectDefaultString(def: unknown): string {
@@ -316,6 +317,7 @@ export default function OnboardingChatPanel({
       } finally {
         setStreamBusy(false);
         setAwaitingFirstEvent(false);
+        void useAuthStore.getState().refreshCredits();
       }
     },
     [],

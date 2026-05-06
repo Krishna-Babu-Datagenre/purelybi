@@ -18,6 +18,7 @@ import {
   Database,
 } from 'lucide-react';
 import { useDashboardStore } from '../store/useDashboardStore';
+import { useAuthStore } from '../store/useAuthStore';
 import type { ApiDashboardMeta, TemplateMeta } from '../types';
 
 type CombinedDashRow =
@@ -244,11 +245,26 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
     if (idx >= 0) setSelectedDashboardRowIndex(idx);
   }, [navigationPage, activeDashboardListId, dashboardList]);
 
+  const user = useAuthStore((s) => s.user);
+
   return (
     <div className={`sidebar ${collapsed ? 'sidebar--collapsed' : 'sidebar--expanded'}`}>
       {/* Header spacer */}
       <div className="sidebar-header" />
 
+      {/* Subscription / Credits Info */}
+      {user && !collapsed && (
+        <div className="px-4 py-3 mx-2 mb-2 bg-purple-500/10 rounded-lg border border-purple-500/20">
+          <div className="text-xs font-semibold text-purple-400 mb-1 uppercase tracking-wider">
+            {user.subscription_tier?.tier_name || 'Free'} Plan
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-300">AI Credits:</span>
+            <span className="text-sm font-medium text-white">{user.ai_credits_balance ?? 0}</span>
+          </div>
+        </div>
+      )}
+      
       {/* Navigation */}
       <div className="sidebar-nav">
         {/* ── Workspace (primary nav) ── */}
@@ -384,9 +400,10 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
             <div className="flex flex-col gap-0.5">
               <button
                 type="button"
+                disabled={user && user.dashboard_count !== undefined && user.subscription_tier ? user.dashboard_count >= user.subscription_tier.max_dashboards : false}
                 onClick={handleOpenAiDashboardBuilder}
-                className={`sidebar-item ${navigationPage === 'dashboard-ai' ? 'sidebar-item--active' : ''}`}
-                title="Build dashboards with AI (Surprise me or Guided)"
+                className={`sidebar-item ${navigationPage === 'dashboard-ai' ? 'sidebar-item--active' : ''} disabled:opacity-50 disabled:cursor-not-allowed`}
+                title={user && user.dashboard_count !== undefined && user.subscription_tier && user.dashboard_count >= user.subscription_tier.max_dashboards ? `You have reached your limit of ${user.subscription_tier.max_dashboards} dashboards on the ${user.subscription_tier.tier_name} plan.` : "Build dashboards with AI (Surprise me or Guided)"}
               >
                 <Sparkles size={20} />
                 <span className="truncate">Build with AI</span>

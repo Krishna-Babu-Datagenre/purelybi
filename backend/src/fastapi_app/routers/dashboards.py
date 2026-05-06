@@ -52,6 +52,7 @@ from fastapi_app.services.widget_data_service import (
     hydrate_widgets,
 )
 from fastapi_app.utils.auth_dep import get_current_user_dep
+from fastapi_app.services.subscription_service import can_create_dashboard
 
 router = APIRouter(prefix="/api/dashboards", tags=["dashboards"])
 
@@ -199,6 +200,11 @@ class MaxDataDateResponse(BaseModel):
 
     max_date: str = Field(..., description="ISO date YYYY-MM-DD")
 
+class ShareDashboardRequest(BaseModel):
+    """Body for sharing a dashboard with another user."""
+    email: str = Field(..., description="Email address to share with")
+    permission_level: str = Field("read", description="'read' or 'edit'")
+
 
 class DashboardBuilderReadinessResponse(BaseModel):
     """Whether the user can run the dashboard builder agent."""
@@ -227,6 +233,9 @@ def create_blank_dashboard(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Create a new empty dashboard owned by the authenticated user."""
+    if not can_create_dashboard(user.id):
+        raise HTTPException(status_code=403, detail="Dashboard limit reached for your current plan.")
+        
     return create_dashboard(
         user_id=user.id,
         name=body.name,
@@ -382,6 +391,9 @@ def duplicate_dashboard_endpoint(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Duplicate a dashboard (user-owned or template) under the authenticated user's profile."""
+    if not can_create_dashboard(user.id):
+        raise HTTPException(status_code=403, detail="Dashboard limit reached for your current plan.")
+        
     return duplicate_dashboard(
         user_id=user.id,
         dashboard_id=dashboard_id,
@@ -591,3 +603,135 @@ def remove_widget(
             status_code=404,
             detail=f"Widget '{widget_id}' not found.",
         )
+
+# ---------------------------------------------------------------------------
+# Dashboard Sharing
+# ---------------------------------------------------------------------------
+
+@router.post("/{dashboard_id}/share")
+def share_dashboard(
+    dashboard_id: str,
+    body: ShareDashboardRequest,
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Share a dashboard with another user by email."""
+    from fastapi_app.services.subscription_service import get_user_subscription
+    from fastapi_app.utils.supabase_client import get_supabase_admin_client
+    
+    profile = get_user_subscription(user.id)
+    plan = profile.get("subscription_tier")
+    if not plan:
+        raise HTTPException(status_code=403, detail="No subscription plan found.")
+        
+    tier = plan.get("tier_name", "Free")
+    
+    # Free / Starter: Return 403 Forbidden
+    if tier in ["Free", "Starter"]:
+        raise HTTPException(status_code=403, detail=f"Sharing is not allowed on the {tier} plan.")
+        
+    # Pro: Forces permission_level = 'read'
+    perm = body.permission_level
+    if tier == "Pro":
+        perm = "read"
+        
+    # Growth / Enterprise: Allows 'read' or 'edit'
+    if perm not in ["read", "edit"]:
+        perm = "read"
+        
+    client = get_supabase_admin_client()
+    
+    # Verify ownership
+    rows = (
+        client.table("dashboards")
+        .select("id")
+        .eq("id", dashboard_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+         raise HTTPException(status_code=404, detail="Dashboard not found or you don't own it.")
+         
+    # Verify target user exists
+    target_user_res = (
+        client.table("profiles")
+        .select("id")
+        .eq("email", body.email)
+        .limit(1)
+        .execute()
+    )
+    if not target_user_res.data:
+        raise HTTPException(status_code=404, detail="The email provided does not belong to a registered user.")
+         
+    try:
+        res = client.table("dashboard_shares").upsert({
+            "dashboard_id": dashboard_id,
+            "shared_by_user_id": user.id,
+            "shared_with_email": body.email,
+            "permission_level": perm
+        }).execute()
+        return res.data[0] if res.data else {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{dashboard_id}/shares")
+def list_dashboard_shares(
+    dashboard_id: str,
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """List all active shares for a given dashboard."""
+    from fastapi_app.utils.supabase_client import get_supabase_admin_client
+    client = get_supabase_admin_client()
+    
+    # Verify ownership
+    rows = (
+        client.table("dashboards")
+        .select("id")
+        .eq("id", dashboard_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+         raise HTTPException(status_code=404, detail="Dashboard not found or you don't own it.")
+         
+    shares = (
+        client.table("dashboard_shares")
+        .select("*")
+        .eq("dashboard_id", dashboard_id)
+        .execute()
+    ).data
+    
+    return shares
+
+
+@router.delete("/{dashboard_id}/shares/{share_id}", status_code=204)
+def revoke_dashboard_share(
+    dashboard_id: str,
+    share_id: str,
+    user: UserProfile = Depends(get_current_user_dep),
+):
+    """Revoke a previously granted share."""
+    from fastapi_app.utils.supabase_client import get_supabase_admin_client
+    client = get_supabase_admin_client()
+    
+    # Verify ownership
+    rows = (
+        client.table("dashboards")
+        .select("id")
+        .eq("id", dashboard_id)
+        .eq("user_id", user.id)
+        .limit(1)
+        .execute()
+    ).data
+    if not rows:
+         raise HTTPException(status_code=404, detail="Dashboard not found or you don't own it.")
+         
+    (
+        client.table("dashboard_shares")
+        .delete()
+        .eq("id", share_id)
+        .eq("dashboard_id", dashboard_id)
+        .execute()
+    )

@@ -7,6 +7,7 @@ import { streamChat, getChatHistory, clearChatHistory } from '../services/chatAp
 let dashboardStreamAbort: AbortController | null = null;
 import type { ChatMessageWithCharts, StreamingToolCall } from './useChatStore';
 import { useDashboardStore } from './useDashboardStore';
+import { useAuthStore } from './useAuthStore';
 import type { MagicTimelineSegment, RichToolStep } from '../utils/magicToolTimeline';
 import {
   chartsFromTimeline,
@@ -452,6 +453,7 @@ export const useDashboardBuilderStore = create<DashboardBuilderState>((set, get)
             ...nextWizard,
           });
           void useDashboardStore.getState().fetchUserDashboardList({ forceRefresh: true });
+          void useAuthStore.getState().refreshCredits();
           return;
         }
         if (mode === 'guided') {
@@ -479,6 +481,7 @@ export const useDashboardBuilderStore = create<DashboardBuilderState>((set, get)
             ...nextWizard,
           });
           void useDashboardStore.getState().fetchUserDashboardList({ forceRefresh: true });
+          void useAuthStore.getState().refreshCredits();
           return;
         }
         const content = st.streamingContent;
@@ -502,6 +505,7 @@ export const useDashboardBuilderStore = create<DashboardBuilderState>((set, get)
           ...nextWizard,
         });
         void useDashboardStore.getState().fetchUserDashboardList({ forceRefresh: true });
+        void useAuthStore.getState().refreshCredits();
         return;
       }
 

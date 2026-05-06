@@ -42,7 +42,7 @@ Date,Time,Booking ID,Booking Status,Customer ID,Vehicle Type,Pickup Location,Dro
 2024-02-08,23:01:51,"""CNR5154403""",Incomplete,"""CID7586315""",Go Sedan,Rohini West,Udyog Vihar Phase 4,3.5,25.6,,,,,1.0,Vehicle Breakdown,604.0,6.36,,,Cash
 2024-12-21,14:16:24,"""CNR9524961""",Completed,"""CID3126351""",Auto,INA Market,Pragati Maidan,13.1,20.2,,,,,,,1199.0,44.53,3.2,4.3,Cash
 2024-04-28,12:05:20,"""CNR1249800""",Completed,"""CID4212363""",Go Sedan,Khan Market,Greater Kailash,13.0,21.6,,,,,,,437.0,42.22,3.6,4.6,UPI
-2024-12-28,16:19:37,"""CNR4147228""",Completed,"""CID9836238""",Premier Sedan,Sultanpur,IIT Delhi,11.6,19.5,,,,,,,307.0,45.39,4.1,4.6,UPI
+2024-12-28,16:19:37,"""CNR4147228""",Cancelled,"""CID9836238""",Premier Sedan,Sultanpur,IIT Delhi,11.6,19.5,,,,,,,307.0,45.39,4.1,4.6,UPI
 2024-08-09,15:15:45,"""CNR7305929""",Completed,"""CID2682716""",Bike,Tis Hazari,Khan Market,10.4,23.3,,,,,,,497.0,16.37,4.1,4.3,Cash
 2024-09-10,09:07:28,"""CNR7702943""",Completed,"""CID8666686""",Go Mini,Rajouri Garden,Sikanderpur,12.8,24.8,,,,,,,72.0,35.05,4.6,4.8,UPI
 2024-06-06,11:03:17,"""CNR9981916""",Completed,"""CID5798277""",eBike,Shahdara,Gurgaon Railway Station,7.1,43.5,,,,,,,409.0,49.94,4.4,4.6,Cash
@@ -60,11 +60,11 @@ Date,Time,Booking ID,Booking Status,Customer ID,Vehicle Type,Pickup Location,Dro
 2024-07-08,11:59:44,"""CNR7146408""",Completed,"""CID4489233""",Premier Sedan,Preet Vihar,Vatika Chowk,3.7,28.6,,,,,,,86.0,12.26,4.3,4.4,UPI
 2024-11-14,11:11:30,"""CNR3964256""",Completed,"""CID8818706""",Go Sedan,Kalkaji,Kaushambi,12.6,20.7,,,,,,,219.0,16.74,4.2,4.4,Credit Card
 2024-02-10,17:16:11,"""CNR8311923""",Cancelled by Customer,"""CID4189697""",Go Sedan,Peeragarhi,Noida Sector 62,5.7,,1.0,Driver is not moving towards pickup location,,,,,,,,,
-2024-12-23,20:01:30,"""CNR6363304""",Completed,"""CID4697555""",Go Sedan,Kalkaji,Ghitorni,5.2,24.2,,,,,,,236.0,12.5,4.3,3.2,Cash
+2024-12-23,20:01:30,"""CNR6363304""",Cancelled,"""CID4697555""",Go Sedan,Kalkaji,Ghitorni,5.2,24.2,,,,,,,236.0,12.5,4.3,3.2,Cash
 2024-08-19,14:54:12,"""CNR9918956""",No Driver Found,"""CID4457571""",eBike,Central Secretariat,Tughlakabad,,,,,,,,,,,,,
 2024-05-06,19:58:42,"""CNR7853140""",Completed,"""CID8851131""",Premier Sedan,Noida Film City,Anand Vihar ISBT,13.1,30.6,,,,,,,267.0,28.24,4.3,4.9,UPI
 2024-01-02,21:40:33,"""CNR5060204""",Cancelled by Customer,"""CID4505010""",Auto,Lajpat Nagar,Paharganj,13.9,,1.0,Wrong Address,,,,,,,,,
-2024-12-28,18:11:21,"""CNR4889694""",Completed,"""CID2508087""",Premier Sedan,Ghaziabad,Noida Sector 62,10.5,25.3,,,,,,,915.0,41.02,4.3,4.7,Uber Wallet
+2024-12-28,18:11:21,"""CNR4889694""",Cancelled,"""CID2508087""",Premier Sedan,Ghaziabad,Noida Sector 62,10.5,25.3,,,,,,,915.0,41.02,4.3,4.7,Uber Wallet
 2024-10-13,08:18:07,"""CNR1044461""",Cancelled by Driver,"""CID9219266""",Auto,Huda City Centre,Moti Nagar,10.7,,,,1.0,More than permitted people in there,,,,,,,
 2024-11-03,20:02:43,"""CNR6464419""",No Driver Found,"""CID5040212""",Bike,Khandsa,Narsinghpur,,,,,,,,,,,,,
 2024-04-14,14:33:55,"""CNR1280223""",Cancelled by Customer,"""CID4423035""",eBike,Inderlok,IFFCO Chowk,10.3,,1.0,Wrong Address,,,,,,,,,
@@ -107,11 +107,11 @@ Date,Time,Booking ID,Booking Status,Customer ID,Vehicle Type,Pickup Location,Dro
 2024-10-06,15:32:00,"""CNR1482846""",Cancelled by Customer,"""CID5664357""",Premier Sedan,Jhilmil,South Extension,12.4,,1.0,Change of plans,,,,,,,,,
 2024-10-23,08:11:09,"""CNR5580156""",No Driver Found,"""CID6368309""",Go Mini,Nawada,Civil Lines Gurgaon,,,,,,,,,,,,,
 2024-10-04,19:52:28,"""CNR8500348""",Cancelled by Driver,"""CID6274209""",Auto,Badshahpur,Ghitorni,9.8,,,,1.0,Personal & Car related issues,,,,,,,
-2024-12-23,22:58:02,"""CNR4054030""",Completed,"""CID7328616""",Auto,Shivaji Park,Mandi House,6.2,40.6,,,,,,,776.0,25.81,4.4,4.6,Cash
+2024-12-23,22:58:02,"""CNR4054030""",Cancelled,"""CID7328616""",Auto,Shivaji Park,Mandi House,6.2,40.6,,,,,,,776.0,25.81,4.4,4.6,Cash
 2024-02-24,10:21:47,"""CNR3372012""",Completed,"""CID3199655""",Go Sedan,RK Puram,Punjabi Bagh,7.4,26.8,,,,,,,1182.0,40.08,4.7,3.8,Uber Wallet
 2024-08-04,09:51:12,"""CNR6668907""",Cancelled by Driver,"""CID8768583""",Go Mini,Saket A Block,Rajiv Chowk,8.2,,,,1.0,More than permitted people in there,,,,,,,
 2024-01-04,12:50:57,"""CNR3117927""",Cancelled by Driver,"""CID5613738""",Auto,Shivaji Park,Indirapuram,9.3,,,,1.0,Personal & Car related issues,,,,,,,
-2024-12-23,14:23:01,"""CNR8858728""",Incomplete,"""CID6365704""",Auto,Mandi House,Okhla,4.4,17.3,,,,,1.0,Vehicle Breakdown,189.0,2.02,,,Credit Card
+2024-12-23,14:23:01,"""CNR8858728""",Cancelled,"""CID6365704""",Auto,Mandi House,Okhla,4.4,17.3,,,,,1.0,Vehicle Breakdown,189.0,2.02,,,Credit Card
 2024-09-22,19:38:58,"""CNR2892692""",Cancelled by Driver,"""CID8017971""",eBike,ITO,Lal Quila,6.0,,,,1.0,The customer was coughing/sick,,,,,,,
 2024-09-24,11:08:37,"""CNR4191229""",Cancelled by Driver,"""CID7955206""",Go Sedan,Rohini,Bhiwadi,4.8,,,,1.0,More than permitted people in there,,,,,,,
 2024-10-06,12:36:00,"""CNR3752626""",Completed,"""CID7132974""",Premier Sedan,Chhatarpur,Hero Honda Chowk,6.6,34.0,,,,,,,507.0,29.93,4.1,5.0,Uber Wallet

@@ -17,6 +17,7 @@ import MarkdownMessage from './data/MarkdownMessage';
 import { streamAlertBuilder, createAlert } from '../services/backendClient';
 import { useAlertStore } from '../store/useAlertStore';
 import { useDashboardStore } from '../store/useDashboardStore';
+import { useAuthStore } from '../store/useAuthStore';
 
 interface AlertBuilderPageProps {
   sidebarCollapsed: boolean;
@@ -284,6 +285,7 @@ const AlertBuilderPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }
     } finally {
       setStreaming(false);
       setStreamingToolCalls([]);
+      void useAuthStore.getState().refreshCredits();
     }
   }, [input, streaming, sessionId]);
 

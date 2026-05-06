@@ -249,6 +249,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           thoughtSectionCollapsed: true,
           isStreaming: false,
         });
+        
+        // Refresh the user profile to fetch updated AI credits balance after the turn
+        void useAuthStore.getState().refreshCredits();
+        
         return;
       }
 

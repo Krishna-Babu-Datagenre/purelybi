@@ -26,6 +26,7 @@ from fastapi_app.services.chat_service import (
 )
 from ai.tools.sql.charts import clear_query_result
 from fastapi_app.utils.auth_dep import get_current_user_dep
+from fastapi_app.services.subscription_service import get_user_credits
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -67,6 +68,15 @@ async def chat(
                 status_code=400,
                 detail="selected_datasets cannot be empty; omit the field to use all datasets.",
             )
+            
+    # Check AI Credits
+    credits = get_user_credits(user.id)
+    if credits <= 0:
+        raise HTTPException(
+            status_code=402,
+            detail="Payment Required: You have 0 AI credits remaining. Please top up.",
+        )
+        
     session_id = _scoped_session_id(user, request.session_id)
     dash_mode = request.dashboard_mode or "guided"
     return StreamingResponse(

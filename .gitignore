@@ -41,3 +41,4 @@ one-off/*
 archived/*
 docs/inspiration/*
 azure-job-metadata-generator/local-testing/*
+data/ncr_ride_bookings_sampled.csv

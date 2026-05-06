@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { UserProfile } from '../types';
-import { getMe, refreshTokens } from '../services/authApi';
+import { getMe, fetchCredits, refreshTokens } from '../services/authApi';
 
 const STORAGE_KEY = 'bi-agent-auth';
 
@@ -46,8 +46,10 @@ interface AuthState {
 
   setAuth: (accessToken: string, user: UserProfile, refreshToken?: string) => void;
   logout: () => void;
-  /** Validate stored token (e.g. on app load). Clears auth if invalid. */
-  validateStoredToken: () => Promise<boolean>;
+  /** Validate stored token (e.g. on app load). Clears auth if invalid. If silent is true, it will not set validating to true. */
+  validateStoredToken: (silent?: boolean) => Promise<boolean>;
+  /** Lightweight refresh of only ai_credits_balance — no full re-validation, no localStorage write. */
+  refreshCredits: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -69,20 +71,20 @@ export const useAuthStore = create<AuthState>((set) => ({
       .catch(() => {});
   },
 
-  validateStoredToken: async () => {
+  validateStoredToken: async (silent = false) => {
     const stored = loadStored();
     if (!stored) {
       set({ accessToken: null, refreshToken: null, user: null });
       return false;
     }
-    set({ validating: true });
+    if (!silent) set({ validating: true });
     try {
       const user = await getMe(stored.accessToken);
       set({
         accessToken: stored.accessToken,
         refreshToken: stored.refreshToken || null,
         user,
-        validating: false,
+        ...(silent ? {} : { validating: false }),
       });
       saveStored({
         accessToken: stored.accessToken,
@@ -119,6 +121,21 @@ export const useAuthStore = create<AuthState>((set) => ({
         validating: false,
       });
       return false;
+    }
+  },
+
+  refreshCredits: async () => {
+    const { accessToken, user } = useAuthStore.getState();
+    if (!accessToken || !user) return;
+    try {
+      const balance = await fetchCredits(accessToken);
+      // Patch only the credits field — no localStorage write, no re-validation
+      const current = useAuthStore.getState().user;
+      if (current) {
+        set({ user: { ...current, ai_credits_balance: balance } });
+      }
+    } catch {
+      // Non-fatal — credits will refresh on next full validation
     }
   },
 }));

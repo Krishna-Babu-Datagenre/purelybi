@@ -6,6 +6,7 @@ import DataPageFrame from './DataPageFrame';
 import OnboardingChatPanel from './OnboardingChatPanel';
 import LocalFileUploadModal from './LocalFileUploadModal';
 import { useDashboardStore } from '../../store/useDashboardStore';
+import { useAuthStore } from '../../store/useAuthStore';
 
 /* ── Props ── */
 
@@ -306,6 +307,7 @@ const DataConnectPage = ({
   chatWidthPx,
 }: DataConnectPageProps) => {
   const setNavigationPage = useDashboardStore((s) => s.setNavigationPage);
+  const user = useAuthStore((s) => s.user);
   const searchId = useId();
   const detailTitleId = useId();
   const detailRef = useRef<HTMLHeadingElement>(null);
@@ -482,8 +484,10 @@ const DataConnectPage = ({
                       </div>
                       <button
                         type="button"
+                        disabled={user && user.active_connector_count !== undefined && user.subscription_tier ? user.active_connector_count >= user.subscription_tier.max_data_sources : false}
+                        title={user && user.active_connector_count !== undefined && user.subscription_tier && user.active_connector_count >= user.subscription_tier.max_data_sources ? `You have reached your limit of ${user.subscription_tier.max_data_sources} active data sources on the ${user.subscription_tier.tier_name} plan.` : undefined}
                         onClick={() => setShowUploadModal(true)}
-                        className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-5 py-3 text-sm font-medium text-white hover:opacity-90 transition-opacity whitespace-nowrap shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--brand)]"
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-5 py-3 text-sm font-medium text-white hover:opacity-90 transition-opacity whitespace-nowrap shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--brand)] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <UploadCloud size={18} />
                         Upload Local Files
@@ -725,8 +729,10 @@ const DataConnectPage = ({
                       </p>
                       <button
                         type="button"
+                        disabled={user && user.active_connector_count !== undefined && user.subscription_tier ? user.active_connector_count >= user.subscription_tier.max_data_sources : false}
+                        title={user && user.active_connector_count !== undefined && user.subscription_tier && user.active_connector_count >= user.subscription_tier.max_data_sources ? `You have reached your limit of ${user.subscription_tier.max_data_sources} active data sources on the ${user.subscription_tier.tier_name} plan.` : undefined}
                         onClick={() => setStep(3)}
-                        className="shrink-0 rounded-xl bg-[var(--brand)] text-white font-medium px-5 py-3 text-sm hover:opacity-95 transition-opacity cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-surface-alt)]"
+                        className="shrink-0 rounded-xl bg-[var(--brand)] text-white font-medium px-5 py-3 text-sm hover:opacity-95 transition-opacity cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-surface-alt)] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Start guided setup
                       </button>

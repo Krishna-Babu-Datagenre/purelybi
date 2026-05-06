@@ -57,6 +57,11 @@ class UserProfile(BaseModel):
     full_name: str | None = None
     avatar_url: str | None = None
     role: UserRole = UserRole.client
+    subscription_tier: dict | None = None
+    ai_credits_balance: int = 0
+    trial_ends_at: str | None = None
+    dashboard_count: int = 0
+    active_connector_count: int = 0
 
 
 class AuthResponse(BaseModel):

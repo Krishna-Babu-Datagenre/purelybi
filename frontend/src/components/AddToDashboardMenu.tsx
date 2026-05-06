@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { LayoutDashboard, Plus, Check, Loader2, ChevronDown } from 'lucide-react';
 import { useDashboardStore } from '../store/useDashboardStore';
+import { useAuthStore } from '../store/useAuthStore';
 import type { EChartsConfig } from '../types';
 
 interface AddToDashboardMenuProps {
@@ -22,6 +23,7 @@ function AddToDashboardMenu({ chartConfig, chartType, chartTitle, dataConfig }: 
   const menuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const user = useAuthStore((s) => s.user);
   const dashboardListMeta = useDashboardStore((s) => s.dashboardListMeta);
   const dashboardListFetched = useDashboardStore((s) => s.dashboardListFetched);
   const fetchUserDashboardList = useDashboardStore((s) => s.fetchUserDashboardList);
@@ -169,7 +171,9 @@ function AddToDashboardMenu({ chartConfig, chartType, chartTitle, dataConfig }: 
           {!showNewInput ? (
             <button
               type="button"
-              className="add-to-dash-option add-to-dash-option--create"
+              disabled={user && user.dashboard_count !== undefined && user.subscription_tier ? user.dashboard_count >= user.subscription_tier.max_dashboards : false}
+              title={user && user.dashboard_count !== undefined && user.subscription_tier && user.dashboard_count >= user.subscription_tier.max_dashboards ? `You have reached your limit of ${user.subscription_tier.max_dashboards} dashboards on the ${user.subscription_tier.tier_name} plan.` : undefined}
+              className="add-to-dash-option add-to-dash-option--create disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => setShowNewInput(true)}
             >
               <Plus size={14} />

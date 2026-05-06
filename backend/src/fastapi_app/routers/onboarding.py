@@ -40,6 +40,7 @@ from fastapi_app.settings import (
     ONBOARDING_RATE_LIMIT_PER_MIN,
 )
 from fastapi_app.utils.auth_dep import get_current_user_dep
+from fastapi_app.services.subscription_service import get_user_credits
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,14 @@ async def onboarding_chat(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     _check_rate_limit(user.id)
+
+    # Check AI Credits
+    credits = get_user_credits(user.id)
+    if credits <= 0:
+        raise HTTPException(
+            status_code=402,
+            detail="Payment Required: You have 0 AI credits remaining. Please top up.",
+        )
 
     tid = body.thread_id.strip()
     catalog: dict[str, Any] | None = None

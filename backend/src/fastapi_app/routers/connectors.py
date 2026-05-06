@@ -40,6 +40,7 @@ from fastapi_app.services.connector_service import (
     process_local_file_upload,
 )
 from fastapi_app.utils.auth_dep import get_current_user_dep
+from fastapi_app.services.subscription_service import can_add_source
 
 router = APIRouter(prefix="/api/connectors", tags=["connectors"])
 
@@ -190,6 +191,9 @@ def create_my_connector(
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Create a connector configuration; ``user_id`` is taken from the JWT only."""
+    if not can_add_source(user.id):
+        raise HTTPException(status_code=403, detail="Data source limit reached for your current plan.")
+        
     return create_user_connector(user_id=user.id, body=body)
 
 
@@ -257,6 +261,11 @@ async def upload_local_files(
     """Upload multiple local files directly as a data source."""
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
+        
+    # If this is a new config (not updating an existing one), check limits
+    if config_id is None and not can_add_source(user.id):
+        raise HTTPException(status_code=403, detail="Data source limit reached for your current plan.")
+        
     return await process_local_file_upload(
         user_id=user.id, files=files, source_name=source_name, config_id=config_id
     )
