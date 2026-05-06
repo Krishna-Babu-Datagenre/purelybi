@@ -389,6 +389,22 @@ export interface SignUpRequest {
   full_name?: string;
 }
 
+/** PATCH /api/auth/profile */
+export interface ProfileUpdateRequest {
+  full_name?: string;
+}
+
+/** A subscription plan row from the backend */
+export interface SubscriptionPlan {
+  id: string;
+  tier_name: string;
+  max_data_sources: number;
+  max_storage_mb: number;
+  max_dashboards: number;
+  included_ai_credits: number;
+  min_sync_frequency_minutes: number;
+}
+
 /* ─────────────────────────────────────────────
    Dashboard API response types (Supabase-backed)
 ───────────────────────────────────────────── */

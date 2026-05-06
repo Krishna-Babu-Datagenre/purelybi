@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { LayoutDashboard, LogOut, UserX } from 'lucide-react';
+import { LayoutDashboard, LogOut, UserX, User, CreditCard } from 'lucide-react';
 import { useChatStore } from '../store/useChatStore';
 import { useAuthStore } from '../store/useAuthStore';
+import { useDashboardStore } from '../store/useDashboardStore';
 import { deleteAccount } from '../services/authApi';
 
 interface TopbarProps {
@@ -19,6 +20,7 @@ const Topbar = ({ sidebarCollapsed, title, subtitle }: TopbarProps) => {
   const accessToken = useAuthStore((s) => s.accessToken);
   const logout = useAuthStore((s) => s.logout);
   const displayName = user?.full_name || user?.email || 'User';
+  const setNavigationPage = useDashboardStore((s) => s.setNavigationPage);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
@@ -102,6 +104,31 @@ const Topbar = ({ sidebarCollapsed, title, subtitle }: TopbarProps) => {
                   <span className="topbar-user-menu__email">{user.email}</span>
                 )}
               </div>
+              <button
+                type="button"
+                className="topbar-user-menu__item"
+                role="menuitem"
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  setNavigationPage('profile');
+                }}
+              >
+                <User size={16} strokeWidth={2} />
+                <span>Profile</span>
+              </button>
+              <button
+                type="button"
+                className="topbar-user-menu__item"
+                role="menuitem"
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  setNavigationPage('billing');
+                }}
+              >
+                <CreditCard size={16} strokeWidth={2} />
+                <span>Billing & Plans</span>
+              </button>
+              <div className="topbar-user-menu__divider" />
               <button
                 type="button"
                 className="topbar-user-menu__item"

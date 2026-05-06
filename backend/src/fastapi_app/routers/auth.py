@@ -3,13 +3,15 @@ API routes for authentication.
 
 Endpoints
 ---------
-POST /api/auth/signup          – register with email + password
-POST /api/auth/signin          – login with email + password
-POST /api/auth/refresh         – rotate access token using refresh token
-GET  /api/auth/google          – get Google OAuth redirect URL
-GET  /api/auth/credits         – get current AI credits balance (lightweight)
-GET  /api/auth/me              – get current user profile from token
-DELETE /api/auth/account       – permanently delete the current user (auth + profile)
+POST   /api/auth/signup          – register with email + password
+POST   /api/auth/signin          – login with email + password
+POST   /api/auth/refresh         – rotate access token using refresh token
+GET    /api/auth/google          – get Google OAuth redirect URL
+GET    /api/auth/credits         – get current AI credits balance (lightweight)
+GET    /api/auth/me              – get current user profile from token
+PATCH  /api/auth/profile         – update current user's profile fields
+GET    /api/auth/plans           – list all subscription plans
+DELETE /api/auth/account         – permanently delete the current user (auth + profile)
 """
 
 from __future__ import annotations
@@ -22,9 +24,11 @@ from fastapi.responses import JSONResponse
 
 from fastapi_app.models.auth import (
     AuthResponse,
+    ProfileUpdateRequest,
     RefreshRequest,
     SignInRequest,
     SignUpRequest,
+    SubscriptionPlan,
     UserProfile,
 )
 from fastapi_app.services.auth_service import (
@@ -33,9 +37,11 @@ from fastapi_app.services.auth_service import (
     get_current_user,
     get_google_oauth_url,
     get_user_credits,
+    list_subscription_plans,
     refresh_with_refresh_token,
     sign_in_with_email,
     sign_up_with_email,
+    update_user_profile,
 )
 from fastapi_app.utils.auth_dep import parse_bearer_token
 
@@ -123,6 +129,21 @@ async def me(authorization: str = Header(...)):
     Expects ``Authorization: Bearer <access_token>`` header.
     """
     return get_current_user(access_token=parse_bearer_token(authorization))
+
+
+@router.patch("/profile", response_model=UserProfile)
+async def patch_profile(body: ProfileUpdateRequest, authorization: str = Header(...)):
+    """Update the current user's profile fields (e.g. full_name)."""
+    return update_user_profile(
+        access_token=parse_bearer_token(authorization),
+        body=body,
+    )
+
+
+@router.get("/plans", response_model=list[SubscriptionPlan])
+async def get_plans():
+    """Return all available subscription plans (public, no auth required)."""
+    return list_subscription_plans()
 
 
 @router.delete("/account", status_code=status.HTTP_204_NO_CONTENT)

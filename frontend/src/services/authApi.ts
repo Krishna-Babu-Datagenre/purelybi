@@ -1,8 +1,10 @@
 import type {
   AuthResponse,
   UserProfile,
+  ProfileUpdateRequest,
   SignInRequest,
   SignUpRequest,
+  SubscriptionPlan,
 } from '../types';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '') ?? 'http://localhost:8000';
@@ -105,4 +107,17 @@ export async function deleteAccount(accessToken: string): Promise<void> {
       typeof detail === 'string' ? detail : `Request failed: ${res.status} ${res.statusText}`,
     );
   }
+}
+
+/** PATCH /api/auth/profile — update the authenticated user's profile fields */
+export function updateProfile(accessToken: string, body: ProfileUpdateRequest): Promise<UserProfile> {
+  return requestWithAuth<UserProfile>('/api/auth/profile', accessToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+}
+
+/** GET /api/auth/plans — list all available subscription plans */
+export function fetchSubscriptionPlans(): Promise<SubscriptionPlan[]> {
+  return request<SubscriptionPlan[]>('/api/auth/plans');
 }

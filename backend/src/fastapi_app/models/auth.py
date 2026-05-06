@@ -44,9 +44,27 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(..., min_length=10)
 
 
+class ProfileUpdateRequest(BaseModel):
+    """Partial update to the user's profile. Only provided fields are patched."""
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=120)
+
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
+
+
+class SubscriptionPlan(BaseModel):
+    """A subscription plan row from the subscription_plans table."""
+
+    id: str
+    tier_name: str
+    max_data_sources: int
+    max_storage_mb: int
+    max_dashboards: int
+    included_ai_credits: int
+    min_sync_frequency_minutes: int
 
 
 class UserProfile(BaseModel):

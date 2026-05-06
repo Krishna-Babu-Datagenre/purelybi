@@ -19,6 +19,8 @@ import HomePage from './components/HomePage';
 import AlertsPage from './components/AlertsPage';
 import AlertBuilderPage from './components/AlertBuilderPage';
 import DashboardBuilderEmptyState from './components/DashboardBuilderEmptyState';
+import ProfilePage from './components/ProfilePage';
+import BillingPage from './components/BillingPage';
 import { useDashboardStore } from './store/useDashboardStore';
 import { useAuthStore } from './store/useAuthStore';
 import { useChatStore } from './store/useChatStore';
@@ -69,6 +71,8 @@ const App = () => {
     if (navigationPage === 'metadata') return 'Metadata review';
     if (navigationPage === 'alerts') return 'Manage alerts';
     if (navigationPage === 'alerts-create') return 'Create alert';
+    if (navigationPage === 'profile') return 'Your profile';
+    if (navigationPage === 'billing') return 'Billing & Plans';
     return undefined;
   }, [navigationPage, hasDashboard, dashboard]);
 
@@ -173,7 +177,9 @@ const App = () => {
                   navigationPage === 'home' ||
                   navigationPage === 'dashboard-ai' ||
                   navigationPage === 'alerts' ||
-                  navigationPage === 'alerts-create'
+                  navigationPage === 'alerts-create' ||
+                  navigationPage === 'profile' ||
+                  navigationPage === 'billing'
                 ? { paddingLeft: 0, paddingRight: 0 }
                 : { paddingLeft: '1.5rem', paddingRight: '1.5rem' }
           }
@@ -360,6 +366,22 @@ const App = () => {
           )}
           {navigationPage === 'metadata' && (
             <MetadataReviewPage
+              sidebarCollapsed={sidebarCollapsed}
+              chatOpen={chatOpen}
+              chatModal={chatModal}
+              chatWidthPx={chatWidthPx}
+            />
+          )}
+          {navigationPage === 'profile' && (
+            <ProfilePage
+              sidebarCollapsed={sidebarCollapsed}
+              chatOpen={chatOpen}
+              chatModal={chatModal}
+              chatWidthPx={chatWidthPx}
+            />
+          )}
+          {navigationPage === 'billing' && (
+            <BillingPage
               sidebarCollapsed={sidebarCollapsed}
               chatOpen={chatOpen}
               chatModal={chatModal}

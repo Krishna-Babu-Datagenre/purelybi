@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from supabase_auth.errors import AuthApiError
 
-from fastapi_app.models.auth import AuthResponse, UserProfile, UserRole
+from fastapi_app.models.auth import AuthResponse, ProfileUpdateRequest, SubscriptionPlan, UserProfile, UserRole
 from fastapi_app.settings import AUTH_SIGNUP_EMAIL_REDIRECT_TO
 from fastapi_app.utils.supabase_client import (
     get_supabase_admin_client,
@@ -375,3 +375,64 @@ def delete_user_account(access_token: str) -> None:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Could not delete account: {e}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Update profile (partial patch)
+# ---------------------------------------------------------------------------
+
+
+def update_user_profile(access_token: str, body: ProfileUpdateRequest) -> UserProfile:
+    """Patch the authenticated user's profile row and return the updated profile.
+
+    Only non-``None`` fields from ``body`` are written. The in-process profile
+    cache is invalidated so the next ``get_current_user`` call fetches fresh data.
+    """
+    supabase = get_supabase_client()
+    try:
+        res = supabase.auth.get_user(access_token)
+    except AuthApiError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+
+    user_id = str(res.user.id)
+
+    # Build the update payload from non-None fields
+    update_data: dict[str, object] = {}
+    if body.full_name is not None:
+        update_data["full_name"] = body.full_name
+
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update.",
+        )
+
+    admin = get_supabase_admin_client()
+    admin.table("profiles").update(update_data).eq("id", user_id).execute()
+
+    # Invalidate the profile cache so subsequent reads are fresh
+    _profile_cache.pop(user_id, None)
+
+    # Return the full refreshed profile
+    return get_current_user(access_token)
+
+
+# ---------------------------------------------------------------------------
+# List subscription plans
+# ---------------------------------------------------------------------------
+
+
+def list_subscription_plans() -> list[SubscriptionPlan]:
+    """Return all subscription plans ordered by credit tier (ascending)."""
+    admin = get_supabase_admin_client()
+    rows = (
+        admin.table("subscription_plans")
+        .select("id, tier_name, max_data_sources, max_storage_mb, max_dashboards, included_ai_credits, min_sync_frequency_minutes")
+        .order("included_ai_credits", desc=False)
+        .execute()
+    )
+    return [SubscriptionPlan(**row) for row in rows.data]
+

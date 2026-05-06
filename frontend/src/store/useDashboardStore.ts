@@ -106,7 +106,9 @@ export type ShellPage =
   | 'data-connect'
   | 'data-manage'
   | 'data-raw-tables'
-  | 'metadata';
+  | 'metadata'
+  | 'profile'
+  | 'billing';
 
 /* ─────────────────────────────────────────────
    Store Interface
