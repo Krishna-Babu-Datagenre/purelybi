@@ -367,6 +367,7 @@ export interface UserProfile {
   } | null;
   ai_credits_balance?: number;
   trial_ends_at?: string | null;
+  created_at?: string | null;
   dashboard_count?: number;
   active_connector_count?: number;
 }

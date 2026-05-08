@@ -78,6 +78,7 @@ class UserProfile(BaseModel):
     subscription_tier: dict | None = None
     ai_credits_balance: int = 0
     trial_ends_at: str | None = None
+    created_at: str | None = None
     dashboard_count: int = 0
     active_connector_count: int = 0
 

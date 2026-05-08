@@ -52,6 +52,7 @@ def _build_user_profile(
         subscription_tier=(profile_row or {}).get("subscription_tier", None),
         ai_credits_balance=(profile_row or {}).get("ai_credits_balance", 0),
         trial_ends_at=(profile_row or {}).get("trial_ends_at", None),
+        created_at=(profile_row or {}).get("created_at") or user.get("created_at"),
         dashboard_count=dashboard_count,
         active_connector_count=active_connector_count,
     )
@@ -113,7 +114,7 @@ def sign_up_with_email(
     # Fetch the freshly-created profile row (trigger should have created it)
     profile_rows = (
         supabase.table("profiles")
-        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, created_at, subscription_tier(*)")
         .eq("id", user.id)
         .limit(1)
         .execute()
@@ -152,7 +153,7 @@ def sign_in_with_email(email: str, password: str) -> AuthResponse:
 
     profile_rows = (
         supabase.table("profiles")
-        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, created_at, subscription_tier(*)")
         .eq("id", user.id)
         .limit(1)
         .execute()
@@ -202,7 +203,7 @@ def refresh_with_refresh_token(refresh_token: str) -> AuthResponse:
 
     profile_rows = (
         supabase.table("profiles")
-        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, created_at, subscription_tier(*)")
         .eq("id", user_dict["id"])
         .limit(1)
         .execute()
@@ -280,7 +281,7 @@ def get_current_user(access_token: str) -> UserProfile:
     admin = get_supabase_admin_client()
     profile_rows = (
         admin.table("profiles")
-        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, subscription_tier(*)")
+        .select("full_name, avatar_url, role, ai_credits_balance, trial_ends_at, created_at, subscription_tier(*)")
         .eq("id", user_id)
         .limit(1)
         .execute()

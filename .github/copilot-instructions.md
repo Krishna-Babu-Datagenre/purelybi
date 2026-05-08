@@ -8,14 +8,22 @@ I am building a web application that allows users to easily integrate data from 
 - **`main.py`** — CLI entry; **`fastapi_app.app:app`** is the ASGI app.
 - **`src/fastapi_app/`** — FastAPI surface area:
   - **`app.py`** — router registration, middleware
-  - **`routers/`** — HTTP routes (`chat`, `auth`, `dashboards`, `connectors`, `templates`, `onboarding`, `agent`, …)
-  - **`services/`** — business logic (`chat_service`, `widget_data_service`, `connector_service`, `dashboard_service`, …)
+  - **`routers/`** — HTTP routes (`chat`, `auth`, `dashboards`, `connectors`, `alerts`, `metadata`, `onboarding`, `templates`, `agent`)
+  - **`services/`** — core business logic
   - **`models/`** — Pydantic / API models
-  - **`middleware/`**, **`utils/`** (`auth_dep`, `supabase_client`), **`settings.py`**
+  - **`middleware/`**, **`utils/`**, **`settings.py`** — cross-cutting concerns and configuration
 - **`src/ai/`** — LangChain / agents and tools:
-  - **`agents/sql/`** — analyst agent, **`duckdb_sandbox.py`**, prompts, streaming
-  - **`agents/onboarding/`** — onboarding agent; **`infra/`** (Azure, Docker, OAuth, stores)
-  - **`tools/sql/`** — DuckDB tools, **`charts.py`** (widgets / ECharts)
-  - **`tools/common/`** — shared tools (calculator, calendar, weather)
-  - **`llms.py`** — model construction
-- **`docs/`** — backend API notes (`docs/fast_api/*.md`); **`tests/`** — pytest; **`supabase/`** — SQL and schema helpers.
+  - **`agents/`** — specific agents (`sql`, `onboarding`, `alerts`, `dashboard`), along with their prompts, infra, and streaming handlers
+  - **`tools/`** — specific and shared tools (`sql` with duckdb tools, `onboarding`, `dashboard_tools.py`, `common`)
+  - **`llms.py`** — foundational LLM construction
+- **`docs/`** — API and project docs; **`tests/`** — pytest suite; **`supabase/`** — SQL and schema helpers.
+
+## Instructions
+
+To ensure maximum efficiency, quality, and alignment during development, strictly adhere to the following principles:
+
+1. **Clarify, Don't Assume:** Never guess intent or missing requirements. If ambiguous, stop and ask.
+2. **Validate & Elevate:** Don't blindly implement my ideas. If my approach isn't production-grade or best-practice, push back and propose the optimal alternative.
+3. **Step-by-Step Execution:** Always outline a sub-task plan first. Get my approval, then execute *one step at a time*.
+4. **Incremental Verification:** Pause after completing each sub-task so I can test it. Never dump massive code blocks and wait until the end for verification.
+5. **Production Quality by Default:** Write DRY code with robust error handling, edge-case checks, and strict type safety. No quick hacks.

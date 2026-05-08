@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
 import { updateProfile } from '../services/authApi';
-import { Save, Check, AlertCircle, User, Mail, Shield, Calendar, Loader2 } from 'lucide-react';
+import { Save, Check, AlertCircle, User, Mail, Calendar, Loader2 } from 'lucide-react';
 
 interface ProfilePageProps {
   sidebarCollapsed: boolean;
@@ -59,8 +59,13 @@ const ProfilePage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Pro
   }, [feedback]);
 
   const initials = (user?.full_name || user?.email || 'U').slice(0, 2).toUpperCase();
-  const memberSince = user?.trial_ends_at
-    ? new Date(new Date(user.trial_ends_at).getTime() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+  const memberSinceDate = user?.created_at
+    ? new Date(user.created_at)
+    : user?.trial_ends_at
+      ? new Date(new Date(user.trial_ends_at).getTime() - 7 * 24 * 60 * 60 * 1000)
+      : null;
+  const memberSince = memberSinceDate && !Number.isNaN(memberSinceDate.getTime())
+    ? memberSinceDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
     : 'N/A';
 
   return (
@@ -133,15 +138,6 @@ const ProfilePage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Pro
               </label>
               <div className="profile-page__readonly-value">{user?.email}</div>
               <p className="profile-page__field-hint">Email changes are managed through your authentication provider.</p>
-            </div>
-
-            {/* Role (read-only) */}
-            <div className="profile-page__field">
-              <label className="profile-page__label">
-                <Shield size={15} className="profile-page__label-icon" />
-                Role
-              </label>
-              <div className="profile-page__readonly-value capitalize">{user?.role ?? 'client'}</div>
             </div>
 
             {/* Member Since (read-only) */}
