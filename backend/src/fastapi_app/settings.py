@@ -40,6 +40,22 @@ LOG_LEVEL: str = _env("LOG_LEVEL", "INFO").upper()
 # Example: https://<your-frontend-domain>/auth/callback
 AUTH_SIGNUP_EMAIL_REDIRECT_TO: str = _env("AUTH_SIGNUP_EMAIL_REDIRECT_TO")
 
+# --- Billing / Stripe ---
+STRIPE_SECRET_KEY: str = _env("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET: str = _env("STRIPE_WEBHOOK_SECRET")
+BILLING_CHECKOUT_SUCCESS_URL: str = _env(
+    "BILLING_CHECKOUT_SUCCESS_URL",
+    "http://localhost:5173/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}",
+)
+BILLING_CHECKOUT_CANCEL_URL: str = _env(
+    "BILLING_CHECKOUT_CANCEL_URL",
+    "http://localhost:5173/billing?checkout=cancelled",
+)
+BILLING_PORTAL_RETURN_URL: str = _env(
+    "BILLING_PORTAL_RETURN_URL",
+    "http://localhost:5173/billing",
+)
+
 # --- Guided connector onboarding (Phase 5) ---
 # Public URL of this API — used as OAuth redirect_uri (must match provider app settings).
 API_PUBLIC_BASE_URL: str = _env("API_PUBLIC_BASE_URL", "http://127.0.0.1:8000")

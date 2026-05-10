@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
-import { fetchSubscriptionPlans } from '../services/authApi';
+import {
+  createBillingPortalSession,
+  createSubscriptionCheckout,
+  createTopupCheckout,
+  fetchBillingSummary,
+  fetchSelfServePlans,
+} from '../services/billingApi';
 import {
   CreditCard,
   Sparkles,
@@ -16,7 +22,7 @@ import {
   Building2,
   Star,
 } from 'lucide-react';
-import type { SubscriptionPlan } from '../types';
+import type { BillingSelfServePlan, BillingSummary, BillingTopupPack } from '../types';
 
 interface BillingPageProps {
   sidebarCollapsed: boolean;
@@ -45,21 +51,38 @@ function formatLimit(value: number): string {
   return value.toLocaleString();
 }
 
+function formatUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+function topupLabel(packCode: string, creditsGranted: number): string {
+  const normalized = packCode.replace(/[_-]+/g, ' ').trim();
+  if (!normalized) return `${creditsGranted} AI Credits`;
+  return normalized.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: BillingPageProps) => {
   const user = useAuthStore((s) => s.user);
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [plans, setPlans] = useState<BillingSelfServePlan[]>([]);
+  const [topupPacks, setTopupPacks] = useState<BillingTopupPack[]>([]);
+  const [summary, setSummary] = useState<BillingSummary | null>(null);
+  const [selectedInterval, setSelectedInterval] = useState<BillingSelfServePlan['billing_interval']>('month');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [processingKey, setProcessingKey] = useState<string | null>(null);
 
-  const currentTierName = user?.subscription_tier?.tier_name || 'Free';
+  const currentTierName = summary?.plan_tier || user?.subscription_tier?.tier_name || 'Free';
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchSubscriptionPlans()
-      .then((data) => {
-        if (!cancelled) setPlans(data);
+    Promise.all([fetchSelfServePlans(), fetchBillingSummary()])
+      .then(([plansRes, summaryRes]) => {
+        if (cancelled) return;
+        setPlans(plansRes.plans);
+        setTopupPacks(plansRes.topup_packs);
+        setSummary(summaryRes);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load plans');
@@ -70,8 +93,8 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
     return () => { cancelled = true; };
   }, []);
 
-  const creditsBalance = user?.ai_credits_balance ?? 0;
-  const currentPlan = plans.find((p) => p.tier_name === currentTierName);
+  const creditsBalance = summary?.ai_credits_balance ?? user?.ai_credits_balance ?? 0;
+  const currentPlan = plans.find((p) => p.plan_tier === currentTierName);
   const creditsTotal = currentPlan?.included_ai_credits ?? 25;
   const creditsPercent = creditsTotal > 0 ? Math.min(100, Math.round((creditsBalance / creditsTotal) * 100)) : 0;
 
@@ -82,6 +105,44 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
   const connectorCount = user?.active_connector_count ?? 0;
   const connectorLimit = user?.subscription_tier?.max_data_sources ?? 1;
   const connectorPercent = connectorLimit >= 999999 ? 5 : Math.min(100, Math.round((connectorCount / connectorLimit) * 100));
+
+  const visiblePlans = plans.filter((plan) => plan.billing_interval === selectedInterval);
+
+  const handleSubscriptionCheckout = async (plan: BillingSelfServePlan) => {
+    try {
+      setProcessingKey(`plan:${plan.price_lookup_key}`);
+      const session = await createSubscriptionCheckout(plan.plan_tier, plan.billing_interval);
+      window.location.assign(session.checkout_url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create checkout session');
+    } finally {
+      setProcessingKey(null);
+    }
+  };
+
+  const handleTopupCheckout = async (pack: BillingTopupPack) => {
+    try {
+      setProcessingKey(`topup:${pack.pack_code}`);
+      const session = await createTopupCheckout(pack.pack_code);
+      window.location.assign(session.checkout_url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create top-up checkout session');
+    } finally {
+      setProcessingKey(null);
+    }
+  };
+
+  const handleOpenPortal = async () => {
+    try {
+      setProcessingKey('portal');
+      const session = await createBillingPortalSession();
+      window.location.assign(session.portal_url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open billing portal');
+    } finally {
+      setProcessingKey(null);
+    }
+  };
 
   return (
     <div
@@ -101,6 +162,17 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
         <div className="billing-page__header">
           <h1 className="billing-page__title">Billing & Plans</h1>
           <p className="billing-page__subtitle">Manage your subscription and view usage</p>
+          <div className="billing-page__plan-btn-wrap" style={{ marginTop: '0.75rem', maxWidth: 280 }}>
+            <button
+              type="button"
+              className="billing-page__plan-btn billing-page__plan-btn--upgrade"
+              onClick={handleOpenPortal}
+              disabled={processingKey === 'portal'}
+            >
+              <CreditCard size={16} />
+              {processingKey === 'portal' ? 'Opening…' : 'Open Billing Portal'}
+            </button>
+          </div>
         </div>
 
         {/* Current Plan Overview */}
@@ -187,8 +259,32 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
 
         {/* Plans Comparison */}
         <div className="billing-page__plans-section">
-          <h2 className="billing-page__section-title">Available Plans</h2>
-          <p className="billing-page__section-desc">Compare plans and choose the best fit for your needs.</p>
+          <div className="billing-page__plans-head">
+            <div>
+              <h2 className="billing-page__section-title">Available Plans</h2>
+              <p className="billing-page__section-desc">Compare plans and choose the best fit for your needs.</p>
+            </div>
+            <div className="billing-page__interval-toggle" role="tablist" aria-label="Billing interval">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={selectedInterval === 'month'}
+                className={`billing-page__interval-btn ${selectedInterval === 'month' ? 'billing-page__interval-btn--active' : ''}`}
+                onClick={() => setSelectedInterval('month')}
+              >
+                Monthly
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={selectedInterval === 'year'}
+                className={`billing-page__interval-btn ${selectedInterval === 'year' ? 'billing-page__interval-btn--active' : ''}`}
+                onClick={() => setSelectedInterval('year')}
+              >
+                Yearly
+              </button>
+            </div>
+          </div>
 
           {loading && (
             <div className="billing-page__plans-loading">
@@ -205,15 +301,17 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
 
           {!loading && !error && (
             <div className="billing-page__plans-grid">
-              {plans.map((plan) => {
-                const isCurrent = plan.tier_name === currentTierName;
-                const theme = TIER_THEME[plan.tier_name] || TIER_THEME.Free;
+              {visiblePlans.map((plan) => {
+                const isCurrent = plan.plan_tier === currentTierName;
+                const theme = TIER_THEME[plan.plan_tier] || TIER_THEME.Free;
                 const PlanIcon = theme.icon;
                 const isUpgrade = !isCurrent;
+                const key = `plan:${plan.price_lookup_key}`;
+                const processing = processingKey === key;
 
                 return (
                   <div
-                    key={plan.id}
+                    key={key}
                     className={`billing-page__plan-card ${isCurrent ? 'billing-page__plan-card--current' : ''}`}
                     style={{ '--plan-accent': theme.accentVar } as React.CSSProperties}
                   >
@@ -221,7 +319,10 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
                     <div className="billing-page__plan-card-icon" style={{ background: theme.gradient }}>
                       <PlanIcon size={24} strokeWidth={1.8} />
                     </div>
-                    <h3 className="billing-page__plan-card-name">{plan.tier_name}</h3>
+                    <h3 className="billing-page__plan-card-name">{plan.plan_tier}</h3>
+                    <div className="billing-page__plan-status" style={{ marginTop: '-0.25rem', marginBottom: '0.75rem' }}>
+                      {formatUsd(plan.amount_usd)} / {plan.billing_interval}
+                    </div>
 
                     <ul className="billing-page__plan-features">
                       <li>
@@ -256,13 +357,12 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
                         <button
                           type="button"
                           className="billing-page__plan-btn billing-page__plan-btn--upgrade"
-                          disabled
-                          title="Payment integration coming soon"
+                          onClick={() => void handleSubscriptionCheckout(plan)}
+                          disabled={processing}
                         >
                           <CreditCard size={16} />
-                          {isUpgrade ? 'Upgrade' : 'Select'}
+                          {processing ? 'Redirecting…' : isUpgrade ? 'Upgrade' : 'Select'}
                         </button>
-                        <span className="billing-page__coming-soon">Coming Soon</span>
                       </div>
                     )}
                   </div>
@@ -270,7 +370,54 @@ const BillingPage = ({ sidebarCollapsed, chatOpen, chatModal, chatWidthPx }: Bil
               })}
             </div>
           )}
+
+          {!loading && !error && visiblePlans.length === 0 && (
+            <div className="billing-page__plans-error">
+              <span>No {selectedInterval} plans are configured yet.</span>
+            </div>
+          )}
         </div>
+
+        {!!topupPacks.length && (
+          <div className="billing-page__plans-section" style={{ marginTop: '2rem' }}>
+            <h2 className="billing-page__section-title">Buy AI Credits</h2>
+            <p className="billing-page__section-desc">Purchase additional credits when your included balance is exhausted.</p>
+            <div className="billing-page__plans-grid">
+              {topupPacks.map((pack) => {
+                const key = `topup:${pack.pack_code}`;
+                const processing = processingKey === key;
+                return (
+                  <div key={pack.pack_code} className="billing-page__plan-card">
+                    <div className="billing-page__plan-card-icon" style={{ background: TIER_THEME.Starter.gradient }}>
+                      <Sparkles size={24} strokeWidth={1.8} />
+                    </div>
+                    <h3 className="billing-page__plan-card-name">{topupLabel(pack.pack_code, pack.credits_granted)}</h3>
+                    <div className="billing-page__plan-status" style={{ marginTop: '-0.25rem', marginBottom: '0.75rem' }}>
+                      {formatUsd(pack.amount_usd)} one-time
+                    </div>
+                    <ul className="billing-page__plan-features">
+                      <li>
+                        <Sparkles size={14} />
+                        <span><strong>{formatLimit(pack.credits_granted)}</strong> AI credits</span>
+                      </li>
+                    </ul>
+                    <div className="billing-page__plan-btn-wrap">
+                      <button
+                        type="button"
+                        className="billing-page__plan-btn billing-page__plan-btn--upgrade"
+                        onClick={() => void handleTopupCheckout(pack)}
+                        disabled={processing}
+                      >
+                        <CreditCard size={16} />
+                        {processing ? 'Redirecting…' : 'Buy Credits'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

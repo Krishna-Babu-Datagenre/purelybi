@@ -116,3 +116,13 @@ The following table models Monthly Recurring Revenue (MRR), total Cost of Goods 
 2. **AI Credits:** 1 AI Credit is consumed for every user message sent to the agent, regardless of how many internal tools the agent executes to resolve that message. **Users on any paid tier (Starter, Pro, Growth, Enterprise) can purchase additional AI credit packs** (e.g., $10 for 100 credits) dynamically if they exceed their monthly limit.
 3. **Data Sync Rate Limits:** All tiers enforce strict minimum intervals between successful job triggers according to the plan (24h, 2h, 1h, or 10m).
 4. **Storage Caps:** Storage is measured by the total size of uncompressed Parquet data within the user's isolated blob storage prefix. Limits are enforced prior to new sync jobs executing.
+
+## 6. Stripe Catalog Wiring Reference
+
+For the current provisioned Stripe product and price IDs, see:
+
+- docs/subscription/stripe_setup_values.md
+
+For the idempotent database upsert that maps Stripe prices to internal plans, run:
+
+- backend/supabase/queries/10-seed-plan-price-map.sql

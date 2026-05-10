@@ -406,6 +406,52 @@ export interface SubscriptionPlan {
   min_sync_frequency_minutes: number;
 }
 
+export type BillingInterval = 'month' | 'year';
+
+export interface BillingSelfServePlan {
+  plan_tier: string;
+  billing_interval: BillingInterval;
+  price_lookup_key: string;
+  amount_usd: number;
+  currency: string;
+  included_ai_credits: number;
+  max_data_sources: number;
+  max_storage_mb: number;
+  max_dashboards: number;
+  min_sync_frequency_minutes: number;
+}
+
+export interface BillingTopupPack {
+  pack_code: string;
+  amount_usd: number;
+  currency: string;
+  credits_granted: number;
+}
+
+export interface BillingSelfServePlansResponse {
+  plans: BillingSelfServePlan[];
+  topup_packs: BillingTopupPack[];
+}
+
+export interface CheckoutSessionResponse {
+  checkout_url: string;
+  session_id: string;
+}
+
+export interface BillingPortalSessionResponse {
+  portal_url: string;
+}
+
+export interface BillingSummary {
+  plan_tier: string;
+  ai_credits_balance: number;
+  subscription_status?: string | null;
+  cancel_at_period_end?: boolean;
+  current_period_start?: string | null;
+  current_period_end?: string | null;
+  currency: string;
+}
+
 /* ─────────────────────────────────────────────
    Dashboard API response types (Supabase-backed)
 ───────────────────────────────────────────── */

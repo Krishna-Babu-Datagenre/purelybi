@@ -2,9 +2,20 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertCircle, CreditCard, X } from 'lucide-react';
 import { useAuthStore } from '../store/useAuthStore';
+import {
+  createBillingPortalSession,
+  createTopupCheckout,
+  fetchSelfServePlans,
+} from '../services/billingApi';
+import type { BillingTopupPack } from '../types';
 
 export default function OutOfCreditsModal() {
   const [isOpen, setIsOpen] = useState(false);
+  const [topupPacks, setTopupPacks] = useState<BillingTopupPack[]>([]);
+  const [isLoadingPacks, setIsLoadingPacks] = useState(false);
+  const [isBuying, setIsBuying] = useState(false);
+  const [isOpeningPortal, setIsOpeningPortal] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const user = useAuthStore((s) => s.user);
 
   useEffect(() => {
@@ -12,6 +23,55 @@ export default function OutOfCreditsModal() {
     window.addEventListener('out-of-credits', handleEvent);
     return () => window.removeEventListener('out-of-credits', handleEvent);
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setIsLoadingPacks(true);
+    setError(null);
+    fetchSelfServePlans()
+      .then((res) => {
+        if (!cancelled) setTopupPacks(res.topup_packs);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load top-up packs');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingPacks(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const handleBuyCredits = async () => {
+    if (!topupPacks.length) {
+      setError('No top-up packs are configured.');
+      return;
+    }
+    const preferred = [...topupPacks].sort((a, b) => a.amount_usd - b.amount_usd)[0];
+    try {
+      setIsBuying(true);
+      const session = await createTopupCheckout(preferred.pack_code);
+      window.location.assign(session.checkout_url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create top-up checkout session');
+    } finally {
+      setIsBuying(false);
+    }
+  };
+
+  const handleOpenPortal = async () => {
+    try {
+      setIsOpeningPortal(true);
+      const session = await createBillingPortalSession();
+      window.location.assign(session.portal_url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open billing portal');
+    } finally {
+      setIsOpeningPortal(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -59,23 +119,31 @@ export default function OutOfCreditsModal() {
           <button
             type="button"
             className="flex-1 rounded-xl border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] transition-colors"
-            onClick={() => setIsOpen(false)}
+            onClick={() => {
+              void handleOpenPortal();
+            }}
+            disabled={isOpeningPortal}
           >
-            Cancel
+            {isOpeningPortal ? 'Opening Portal...' : 'Manage Billing'}
           </button>
           <button
             type="button"
             className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-4 py-2.5 text-sm font-medium text-white hover:bg-[var(--brand-hover)] transition-colors shadow-sm"
             onClick={() => {
-              // TODO: Integrate Stripe billing portal link here
-              window.alert('Redirecting to billing portal...');
-              setIsOpen(false);
+              void handleBuyCredits();
             }}
+            disabled={isBuying || isLoadingPacks}
           >
             <CreditCard size={16} />
-            Upgrade Plan
+            {isLoadingPacks ? 'Loading Packs...' : isBuying ? 'Redirecting...' : 'Buy Credits'}
           </button>
         </div>
+
+        {error && (
+          <p className="mt-4 text-xs text-red-500" role="alert">
+            {error}
+          </p>
+        )}
       </div>
     </div>,
     document.body,

@@ -4953,6 +4953,61 @@ body {
   margin: 0.375rem 0 0;
 }
 
+.billing-page__plans-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.billing-page__plans-head > :first-child {
+  align-self: flex-start;
+}
+
+.billing-page__interval-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 0.625rem;
+  padding: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+.billing-page__interval-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.375rem 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.billing-page__interval-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+.billing-page__interval-btn--active {
+  color: var(--brand);
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(139, 92, 246, 0.35);
+}
+
+@media (max-width: 768px) {
+  .billing-page__interval-toggle {
+    align-self: center;
+  }
+
+  .billing-page__plan-card {
+    max-width: 100%;
+  }
+}
+
 .billing-page__plans-loading {
   display: flex;
   align-items: center;
@@ -4971,14 +5026,17 @@ body {
 }
 
 .billing-page__plans-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 1rem;
   margin-top: 1.25rem;
 }
 
 .billing-page__plan-card {
   position: relative;
+  flex: 1 1 14rem;
+  max-width: 18rem;
   background: var(--bg-surface);
   border: 1px solid var(--border-default);
   border-radius: 1rem;

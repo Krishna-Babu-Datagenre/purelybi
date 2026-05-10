@@ -17,7 +17,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from fastapi_app.middleware.request_id import RequestIdMiddleware
-from fastapi_app.routers import agent, alerts, auth, chat, connectors, dashboards, metadata, onboarding, templates
+from fastapi_app.routers import (
+    agent,
+    alerts,
+    auth,
+    billing,
+    chat,
+    connectors,
+    dashboards,
+    metadata,
+    onboarding,
+    templates,
+)
 from fastapi_app.settings import LOG_LEVEL
 
 _LEVEL = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
@@ -76,6 +87,10 @@ _TAGS = [
     {
         "name": "alerts",
         "description": "Data-driven alerting: create, manage, and evaluate threshold alerts.",
+    },
+    {
+        "name": "billing",
+        "description": "Stripe checkout, billing portal, and webhook-backed subscription sync.",
     },
 ]
 
@@ -197,6 +212,7 @@ app.include_router(onboarding.router)
 app.include_router(agent.router)
 app.include_router(metadata.router)
 app.include_router(alerts.router)
+app.include_router(billing.router)
 
 
 @app.get("/health")

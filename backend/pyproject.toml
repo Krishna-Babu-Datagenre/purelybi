@@ -35,6 +35,7 @@ dependencies = [
     "plotly>=6.6.0",
     "sqlglot>=25.0.0",
     "ipykernel>=7.2.0",
+    "stripe>=12.0.0",
 ]
 
 [dependency-groups]
