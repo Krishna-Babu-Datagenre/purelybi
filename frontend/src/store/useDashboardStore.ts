@@ -30,6 +30,7 @@ import {
 import { apiDashboardToDashboard } from '../utils/apiDashboardToDashboard';
 import { findDashboardKey } from '../utils/dashboardId';
 import { computeKpiLayouts, isAutoBalancedKpiLayout, SECTION_GAP } from '../utils/layoutEngine';
+import { pathToPage } from '../utils/routes';
 
 /* ─────────────────────────────────────────────
    Helpers
@@ -95,6 +96,16 @@ function computeWidgetInsertLayout(existing: Widget[], widgetType: string): Grid
 
   return { x: 0, y: maxBottom, w: CHART_W, h: CHART_H };
 }
+
+/** Read initial navigation state from the URL so the store is correct before the first render. */
+function _initNavFromUrl(): { navigationPage: ShellPage; activeDashboardListId: string | null } {
+  const { page, dashboardId } = pathToPage(typeof window !== 'undefined' ? window.location.pathname : '/');
+  return {
+    navigationPage: (page ?? 'home') as ShellPage,
+    activeDashboardListId: dashboardId ?? null,
+  };
+}
+const _initNav = _initNavFromUrl();
 
 /** Main app shell route — lives in Zustand so it updates in lockstep with dashboard loads (avoids React prop lag vs Zustand). */
 export type ShellPage =
@@ -235,7 +246,7 @@ interface DashboardState {
 ───────────────────────────────────────────── */
 
 export const useDashboardStore = create<DashboardState>((set, get) => ({
-  navigationPage: 'home',
+  navigationPage: _initNav.navigationPage,
   setNavigationPage: (page) => set({ navigationPage: page }),
   openDashboardBuilder: () => {
     set({ navigationPage: 'dashboard-ai' });
@@ -250,7 +261,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   dashboardListMeta: [],
   dashboardListFetched: false,
   activeDashboardId: null,
-  activeDashboardListId: null,
+  activeDashboardListId: _initNav.activeDashboardListId,
 
   templates: [],
   templatesFetched: false,

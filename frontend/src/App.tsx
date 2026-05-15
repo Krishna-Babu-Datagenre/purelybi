@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import LandingPage from './components/landing/LandingPage';
 import DashboardGrid, { DASHBOARD_GRID_PAD_X } from './layouts/DashboardGrid';
 import Sidebar from './components/Sidebar';
@@ -25,8 +26,12 @@ import { useDashboardStore } from './store/useDashboardStore';
 import { useAuthStore } from './store/useAuthStore';
 import { useChatStore } from './store/useChatStore';
 import { initMessageListener, exposeGlobalApi } from './services/dashboardApi';
+import { pageToPath, pathToPage } from './utils/routes';
 
 const App = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const accessToken = useAuthStore((s) => s.accessToken);
   const validating = useAuthStore((s) => s.validating);
   const validateStoredToken = useAuthStore((s) => s.validateStoredToken);
@@ -46,6 +51,8 @@ const App = () => {
   const fetchTemplates = useDashboardStore((s) => s.fetchTemplates);
   const navigationPage = useDashboardStore((s) => s.navigationPage);
   const setNavigationPage = useDashboardStore((s) => s.setNavigationPage);
+  const activeDashboardListId = useDashboardStore((s) => s.activeDashboardListId);
+  const openUserDashboard = useDashboardStore((s) => s.openUserDashboard);
 
   const isEditMode = useDashboardStore((s) => s.isEditMode);
   const isSavingLayout = useDashboardStore((s) => s.isSavingLayout);
@@ -59,7 +66,9 @@ const App = () => {
   const showDashboardLoader = dashboardLoading || (!!activeDashboardId && !dashboard);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [authScreen, setAuthScreen] = useState<'landing' | 'login'>('landing');
+  const [authScreen, setAuthScreen] = useState<'landing' | 'login'>(
+    location.pathname === '/login' ? 'login' : 'landing',
+  );
 
   const topbarSubtitle = useMemo(() => {
     if (navigationPage === 'dashboard' && hasDashboard) return dashboard!.meta.name;
@@ -88,13 +97,69 @@ const App = () => {
     fetchTemplates();
   }, [accessToken, fetchUserDashboardList, fetchTemplates]);
 
-  // Reset shell route when session ends (local React state would reset anyway on unmount)
+  // Reset shell navigation state when session ends
   useEffect(() => {
     if (!accessToken) {
       setNavigationPage('home');
       setAuthScreen('landing');
     }
   }, [accessToken, setNavigationPage]);
+
+  // Redirect unauthenticated users away from protected routes (e.g. if URL is /home after sign-out)
+  useEffect(() => {
+    if (accessToken) return;
+    if (location.pathname !== '/' && location.pathname !== '/login') {
+      navigate('/', { replace: true });
+    }
+  }, [accessToken, location.pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Redirect authenticated users away from auth-only routes
+  useEffect(() => {
+    if (!accessToken) return;
+    if (location.pathname === '/' || location.pathname === '/login') {
+      navigate('/home', { replace: true });
+    }
+  }, [accessToken, location.pathname, navigate]);
+
+  // Effect A — store → URL: when navigationPage or activeDashboardListId changes, update the URL.
+  // The pre-initialization of the store from the URL ensures the URL already matches on first render,
+  // so this effect is a no-op on mount and only fires on user-driven navigation.
+  useEffect(() => {
+    if (!accessToken) return;
+    const targetPath = pageToPath(navigationPage, activeDashboardListId);
+    if (location.pathname !== targetPath) {
+      navigate(targetPath, { replace: false });
+    }
+  }, [navigationPage, activeDashboardListId, accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Effect B — URL → store: handle browser back/forward and direct URL entry.
+  // On mount this is a no-op because the store was pre-initialized from the URL.
+  useEffect(() => {
+    if (!accessToken) return;
+    const { page, dashboardId } = pathToPage(location.pathname);
+    if (page === null) return; // auth routes, handled separately
+    if (page === 'dashboard' && dashboardId) {
+      if (dashboardId !== activeDashboardListId) {
+        void openUserDashboard(dashboardId);
+      }
+    } else if (page !== navigationPage) {
+      setNavigationPage(page);
+    }
+  }, [location.pathname, accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync auth screen state with URL when not authenticated (handles browser back/forward)
+  useEffect(() => {
+    if (accessToken) return;
+    setAuthScreen(location.pathname === '/login' ? 'login' : 'landing');
+  }, [location.pathname, accessToken]);
+
+  // Load dashboard data after auth if URL points to a specific dashboard
+  useEffect(() => {
+    if (!accessToken) return;
+    if (navigationPage === 'dashboard' && activeDashboardListId) {
+      void openUserDashboard(activeDashboardListId);
+    }
+  }, [accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Initialize backend communication channels when in app
   useEffect(() => {
@@ -118,9 +183,9 @@ const App = () => {
 
   if (!accessToken) {
     if (authScreen === 'landing') {
-      return <LandingPage onOpenAuth={() => setAuthScreen('login')} />;
+      return <LandingPage onOpenAuth={() => { navigate('/login'); setAuthScreen('login'); }} />;
     }
-    return <LoginPage onBackToLanding={() => setAuthScreen('landing')} />;
+    return <LoginPage onBackToLanding={() => { navigate('/'); setAuthScreen('landing'); }} />;
   }
 
   return (
