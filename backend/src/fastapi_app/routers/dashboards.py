@@ -472,11 +472,15 @@ def preview_widget(
     """Hydrate a single widget definition with live data without saving it."""
     # hydrate_widgets takes a list of widgets and modifies them in place
     widgets = [body.widget]
-    hydrated = hydrate_widgets(
-        widgets,
-        tenant_id=user.id,
-        force_refresh=True,
-    )
+    try:
+        hydrated = hydrate_widgets(
+            widgets,
+            tenant_id=user.id,
+            force_refresh=True,
+            raise_on_error=True,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not hydrated:
         raise HTTPException(status_code=400, detail="Failed to hydrate widget.")
     return hydrated[0]

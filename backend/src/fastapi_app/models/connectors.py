@@ -125,6 +125,14 @@ class RawTablePreview(BaseModel):
         default_factory=list,
         description="YYYY-MM Parquet files included in this preview.",
     )
+    sheet_name: str | None = Field(
+        None,
+        description="Selected sheet name for Excel previews.",
+    )
+    available_sheets: list[str] = Field(
+        default_factory=list,
+        description="Available Excel sheet names when previewing an Excel file.",
+    )
 
 
 class SyncedTableInfo(BaseModel):

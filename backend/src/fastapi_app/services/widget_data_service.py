@@ -1087,6 +1087,7 @@ def hydrate_widget(
     filters_from_preset: str | None = None,
     filter_spec: FilterSpec | None = None,
     relationships: list[dict] | None = None,
+    raise_on_error: bool = False,
 ) -> dict:
     """Populate a widget's ``chart_config`` with live data.
 
@@ -1175,6 +1176,8 @@ def hydrate_widget(
             c, _ = get_tenant_sandbox(tenant_id)
             chart_config = _run(c)
     except Exception:
+        if raise_on_error:
+            raise
         logger.exception("Failed to hydrate widget %s", widget.get("id"))
         return widget
 
@@ -1201,6 +1204,7 @@ def hydrate_widgets(
     filters_from_preset: str | None = None,
     filter_spec: FilterSpec | None = None,
     relationships: list[dict] | None = None,
+    raise_on_error: bool = False,
 ) -> list[dict[str, Any]]:
     """Hydrate every widget in a list using one DuckDB connection when *tenant_id* is set.
 
@@ -1219,6 +1223,7 @@ def hydrate_widgets(
                 filters_from_preset=filters_from_preset,
                 filter_spec=filter_spec,
                 relationships=relationships,
+                raise_on_error=raise_on_error,
             )
             for w in widgets
         ]
@@ -1237,6 +1242,7 @@ def hydrate_widgets(
                 filters_from_preset=filters_from_preset,
                 filter_spec=filter_spec,
                 relationships=relationships,
+                raise_on_error=raise_on_error,
             )
             for w in widgets
         ]
@@ -1254,6 +1260,7 @@ def hydrate_widgets(
             filters_from_preset=filters_from_preset,
             filter_spec=filter_spec,
             relationships=relationships,
+            raise_on_error=raise_on_error,
         )
 
     max_workers = min(len(widgets), 8)
@@ -1266,6 +1273,8 @@ def hydrate_widgets(
             try:
                 results[idx] = fut.result()
             except Exception:
+                if raise_on_error:
+                    raise
                 logger.exception("Failed to hydrate widget at index %d", idx)
                 results[idx] = widgets[idx]  # return widget unchanged on failure
     return results

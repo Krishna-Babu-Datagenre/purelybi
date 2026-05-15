@@ -160,21 +160,25 @@ export default function WidgetSqlEditorModal({ widget, dashboardId, isOpen, onCl
               spellCheck={false}
             />
           </div>
-
-          {previewError && (
-            <div className="p-3 rounded-lg flex gap-2 items-start" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: 'rgb(252, 165, 165)' }}>
-              <AlertCircle size={16} className="mt-0.5 shrink-0" />
-              <div className="whitespace-pre-wrap break-words text-[0.8125rem]">{previewError}</div>
-            </div>
-          )}
-
-          {validationSuccess && !previewError && (
-            <div className="p-3 rounded-lg flex gap-2 items-start" style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)', color: 'rgb(110, 231, 183)' }}>
-              <CheckCircle size={16} className="mt-0.5 shrink-0" />
-              <div className="text-[0.8125rem]">{validationSuccess}</div>
-            </div>
-          )}
         </div>
+
+        {/* Validation feedback — outside scrollable area, always visible */}
+        {(previewError || validationSuccess) && (
+          <div className="px-4 pb-2">
+            {previewError && (
+              <div className="p-3 rounded-lg flex gap-2 items-start" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: 'rgb(252, 165, 165)' }}>
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <div className="whitespace-pre-wrap break-words text-[0.8125rem]">{previewError}</div>
+              </div>
+            )}
+            {validationSuccess && !previewError && (
+              <div className="p-3 rounded-lg flex gap-2 items-start" style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.2)', color: 'rgb(110, 231, 183)' }}>
+                <CheckCircle size={16} className="mt-0.5 shrink-0" />
+                <div className="text-[0.8125rem]">{validationSuccess}</div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Footer */}
         <div 

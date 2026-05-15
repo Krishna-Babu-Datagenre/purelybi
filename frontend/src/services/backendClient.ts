@@ -617,10 +617,28 @@ export function fetchRawTablePreview(
 
 export { RAW_PREVIEW_PAGE_SIZE };
 
+export interface PreviewLocalFileOptions {
+  sheetName?: string;
+  allSheets?: boolean;
+}
+
+export type ExcelSheetUploadSelection =
+  | { mode: 'single'; sheetName?: string }
+  | { mode: 'all' };
+
 /** POST /api/connectors/upload/preview — preview local file */
-export async function previewLocalFile(file: File): Promise<RawTablePreview> {
+export async function previewLocalFile(
+  file: File,
+  options?: PreviewLocalFileOptions,
+): Promise<RawTablePreview> {
   const formData = new FormData();
   formData.append('file', file);
+  if (options?.sheetName) {
+    formData.append('sheet_name', options.sheetName);
+  }
+  if (options?.allSheets) {
+    formData.append('all_sheets', 'true');
+  }
 
   let res: Response;
   try {
@@ -650,12 +668,24 @@ export async function uploadLocalFiles(
   files: File[],
   sourceName: string,
   configId?: string,
+  excelSheetSelections?: Array<ExcelSheetUploadSelection | null>,
 ): Promise<UserConnectorConfig> {
   const formData = new FormData();
   files.forEach((f) => formData.append('files', f));
   formData.append('source_name', sourceName);
   if (configId) {
     formData.append('config_id', configId);
+  }
+  if (excelSheetSelections) {
+    const payload = excelSheetSelections.map((selection) => {
+      if (!selection) return null;
+      if (selection.mode === 'all') return { mode: 'all' as const };
+      return {
+        mode: 'single' as const,
+        sheet_name: selection.sheetName,
+      };
+    });
+    formData.append('excel_sheet_selections', JSON.stringify(payload));
   }
 
   let res: Response;

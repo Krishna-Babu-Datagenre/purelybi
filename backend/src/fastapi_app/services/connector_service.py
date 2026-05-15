@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 _TABLE = "user_connector_configs"
 _CATALOG = "connector_schemas"
 
+_SUPPORTED_LOCAL_FILE_EXTENSIONS = {".csv", ".json", ".parquet", ".xlsx", ".xls"}
+_SUPPORTED_LOCAL_FILE_EXTENSIONS_LABEL = "CSV (.csv), JSON (.json), Parquet (.parquet), Excel (.xlsx, .xls)"
+_EXCEL_EXTENSIONS = {".xlsx", ".xls"}
+
 # List endpoint columns only — keeps payloads small (no config_schema / oauth_config).
 _CATALOG_LIST_COLUMNS = (
     "id,name,docker_repository,docker_image_tag,icon_url,documentation_url,"
@@ -61,6 +65,140 @@ _HIVE_MONTH_RE = re.compile(r"month=(\d{1,2})")
 
 # Cap long strings in preview JSON (keeps payloads bounded).
 _PREVIEW_CELL_MAX_CHARS = 4000
+
+
+def _validate_local_upload_payload(filename: str, payload: bytes) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in _SUPPORTED_LOCAL_FILE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file type '{ext or 'unknown'}'. "
+                f"Supported formats: {_SUPPORTED_LOCAL_FILE_EXTENSIONS_LABEL}."
+            ),
+        )
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{filename}' is empty. Add data to the file and upload again.",
+        )
+    return ext
+
+
+def _is_excel_extension(ext: str) -> bool:
+    return ext in _EXCEL_EXTENSIONS
+
+
+def _sanitize_stream_segment(value: str, *, fallback: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", value).strip("_")
+    return normalized or fallback
+
+
+def _resolve_excel_selection(selection: dict[str, Any] | None) -> tuple[Literal["single", "all"], str | None]:
+    if not selection:
+        return "single", None
+
+    mode_raw = selection.get("mode")
+    mode = str(mode_raw).strip().lower() if mode_raw is not None else "single"
+    if mode not in {"single", "all"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Excel sheet selection mode. Use 'single' or 'all'.",
+        )
+
+    sheet_raw = selection.get("sheet_name")
+    sheet_name = str(sheet_raw).strip() if sheet_raw is not None else None
+    if sheet_name == "":
+        sheet_name = None
+
+    return mode, sheet_name
+
+
+def _resolve_selected_sheet(sheet_names: list[str], requested_sheet: str | None) -> str:
+    if not sheet_names:
+        raise HTTPException(
+            status_code=400,
+            detail="Excel file has no sheets to preview or upload.",
+        )
+
+    if requested_sheet is None:
+        return sheet_names[0]
+
+    if requested_sheet not in sheet_names:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Sheet '{requested_sheet}' not found in workbook. "
+                f"Available sheets: {', '.join(sheet_names)}."
+            ),
+        )
+
+    return requested_sheet
+
+
+def _close_excel_workbook(workbook: Any | None) -> None:
+    if workbook is None:
+        return
+    close_fn = getattr(workbook, "close", None)
+    if callable(close_fn):
+        close_fn()
+
+
+def _raise_local_file_processing_error(
+    *, filename: str, ext: str, action: Literal["preview", "process"], exc: Exception
+) -> None:
+    msg = str(exc).lower()
+    action_text = "preview" if action == "preview" else "process"
+
+    if "openpyxl" in msg and ext == ".xlsx":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot {action_text} '{filename}' because '.xlsx' support is unavailable on the server. "
+                "Please re-save as CSV/Parquet and upload again."
+            ),
+        ) from exc
+    if "xlrd" in msg and ext == ".xls":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot {action_text} '{filename}' because '.xls' support is unavailable on the server. "
+                "Please re-save as '.xlsx' or CSV and upload again."
+            ),
+        ) from exc
+
+    if ext in {".xlsx", ".xls"} and (
+        "excel file format cannot be determined" in msg
+        or "file is not a zip file" in msg
+        or "badzipfile" in msg
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{filename}' is not a valid Excel file. "
+                "Open it in Excel, save it as a standard '.xlsx' workbook, and re-upload."
+            ),
+        ) from exc
+
+    if ext == ".json" and ("json" in msg and ("malformed" in msg or "invalid" in msg)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{filename}' contains invalid JSON. Fix the JSON syntax and re-upload.",
+        ) from exc
+
+    if ext == ".parquet" and ("parquet" in msg and ("invalid" in msg or "corrupt" in msg)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{filename}' is not a valid Parquet file. Re-export it as Parquet and re-upload.",
+        ) from exc
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Could not {action_text} '{filename}'. "
+            "Ensure the file is valid and contains tabular data, then try again."
+        ),
+    ) from exc
 
 # ---------------------------------------------------------------------------
 # Blob client singleton + stream name cache
@@ -622,7 +760,65 @@ def upsert_user_connector_onboarding(
     return result
 
 
+def _delete_connector_blobs(user_id: str, row: dict[str, Any]) -> int:
+    """Delete all blobs in storage belonging to a connector row.
+
+    Iterates every candidate prefix (primary + fallback) so files are cleaned
+    up regardless of which path convention they were written under.  Returns
+    the total number of blobs deleted.  Storage errors are logged but do not
+    raise — Supabase deletion is the authoritative step.
+    """
+    container = _get_blob_container()
+    if container is None:
+        return 0
+
+    connector_folder = _extract_connector_folder(row)
+    prefixes = _candidate_prefixes(user_id, connector_folder)
+
+    total_deleted = 0
+    seen_blobs: set[str] = set()
+    for prefix in prefixes:
+        try:
+            for blob in container.list_blobs(name_starts_with=f"{prefix}/"):
+                blob_name = str(blob.name or "")
+                if blob_name in seen_blobs:
+                    continue
+                seen_blobs.add(blob_name)
+                try:
+                    container.delete_blob(blob_name)
+                    total_deleted += 1
+                except Exception:
+                    logger.exception(
+                        "Failed to delete blob %r for connector %s",
+                        blob_name,
+                        row.get("id"),
+                    )
+        except Exception:
+            logger.exception(
+                "Failed to list blobs under prefix %r for connector %s",
+                prefix,
+                row.get("id"),
+            )
+
+    if total_deleted:
+        logger.info(
+            "Deleted %d blob(s) for connector %s (user=%s, folder=%r)",
+            total_deleted,
+            row.get("id"),
+            user_id,
+            connector_folder,
+        )
+    return total_deleted
+
+
 def delete_user_connector(user_id: str, config_id: str) -> bool:
+    row = get_user_connector(user_id, config_id)
+    if not row:
+        return False
+
+    _delete_connector_blobs(user_id, row)
+    invalidate_stream_cache()
+
     client = get_supabase_admin_client()
     res = (
         client.table(_TABLE)
@@ -715,22 +911,42 @@ def list_synced_tables_metadata(
     return [r for r in results if r]
 
 
-async def preview_local_file(file: UploadFile) -> dict[str, Any] | None:
+async def preview_local_file(
+    file: UploadFile,
+    *,
+    sheet_name: str | None = None,
+    all_sheets: bool = False,
+) -> dict[str, Any]:
     """Read a local file upload and return the first 50 rows as JSON-safe arrays."""
     if not file.filename:
-        return None
-    
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-        tmp.write(await file.read())
+        raise HTTPException(status_code=400, detail="No filename provided.")
+
+    filename = os.path.basename(file.filename)
+    payload = await file.read()
+    ext = _validate_local_upload_payload(filename, payload)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(payload)
         temp_path = tmp.name
-        
+
+    con: duckdb.DuckDBPyConnection | None = None
+    workbook: Any | None = None
     try:
         columns = []
         rows = []
-        if file.filename.lower().endswith(('.xlsx', '.xls')):
+        if _is_excel_extension(ext):
             import pandas as pd
-            df = pd.read_excel(temp_path, nrows=50)
-            columns = list(df.columns)
+
+            engine = "openpyxl" if ext == ".xlsx" else "xlrd"
+            workbook = pd.ExcelFile(temp_path, engine=engine)
+            available_sheets = [str(s) for s in workbook.sheet_names]
+            selected_sheet = _resolve_selected_sheet(available_sheets, sheet_name)
+            # all_sheets mode previews one sheet at a time while exposing the full list.
+            if all_sheets:
+                selected_sheet = _resolve_selected_sheet(available_sheets, selected_sheet)
+
+            df = pd.read_excel(workbook, sheet_name=selected_sheet, nrows=50)
+            columns = [str(c) for c in df.columns]
             # handle NaNs gracefully
             df = df.where(pd.notnull(df), None)
             raw_rows = df.values.tolist()
@@ -738,19 +954,18 @@ async def preview_local_file(file: UploadFile) -> dict[str, Any] | None:
         else:
             con = duckdb.connect(database=":memory:")
             # Use appropriate read function
-            if file.filename.lower().endswith('.json'):
-                query = f"SELECT * FROM read_json_auto('{temp_path}') LIMIT 50"
-            elif file.filename.lower().endswith('.parquet'):
-                query = f"SELECT * FROM read_parquet('{temp_path}') LIMIT 50"
+            if ext == ".json":
+                result = con.execute("SELECT * FROM read_json_auto(?) LIMIT 50", [temp_path])
+            elif ext == ".parquet":
+                result = con.execute("SELECT * FROM read_parquet(?) LIMIT 50", [temp_path])
             else:
-                query = f"SELECT * FROM read_csv_auto('{temp_path}') LIMIT 50"
-                
-            result = con.execute(query)
+                result = con.execute("SELECT * FROM read_csv_auto(?) LIMIT 50", [temp_path])
+
             desc = result.description
             columns = [d[0] for d in desc] if desc else []
             raw_rows = result.fetchall()
             rows = [[_preview_json_cell(c) for c in r] for r in raw_rows]
-            
+
         return {
             "columns": columns,
             "rows": rows,
@@ -758,17 +973,30 @@ async def preview_local_file(file: UploadFile) -> dict[str, Any] | None:
             "offset": 0,
             "has_more": False,
             "months_included": ["unpartitioned"],
+            "sheet_name": selected_sheet if _is_excel_extension(ext) else None,
+            "available_sheets": available_sheets if _is_excel_extension(ext) else [],
         }
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("Failed to preview local file %s", file.filename)
-        return None
+        logger.exception("Failed to preview local file %s", filename)
+        _raise_local_file_processing_error(
+            filename=filename, ext=ext, action="preview", exc=exc
+        )
     finally:
+        if con is not None:
+            con.close()
+        _close_excel_workbook(workbook)
         if os.path.exists(temp_path):
             os.unlink(temp_path)
 
 
 async def process_local_file_upload(
-    user_id: str, files: list[UploadFile], source_name: str, config_id: str | None
+    user_id: str,
+    files: list[UploadFile],
+    source_name: str,
+    config_id: str | None,
+    excel_sheet_selections: list[dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     slug = re.sub(r"[^a-z0-9._-]+", "-", source_name.lower()).strip("-") or "local-file"
     prefix = f"{USER_DATA_BLOB_PREFIX.strip('/')}/{user_id}/{slug}"
@@ -778,47 +1006,96 @@ async def process_local_file_upload(
 
     streams_added = []
     
-    for file in files:
+    for idx, file in enumerate(files):
         if not file.filename:
             continue
-        filename_no_ext = os.path.splitext(file.filename)[0]
-        stream_name = re.sub(r"[^a-zA-Z0-9_]+", "_", filename_no_ext).strip("_") or "stream"
+
+        filename = os.path.basename(file.filename)
+        payload = await file.read()
+        ext = _validate_local_upload_payload(filename, payload)
+        excel_selection = (
+            excel_sheet_selections[idx]
+            if excel_sheet_selections is not None and idx < len(excel_sheet_selections)
+            else None
+        )
+
+        filename_no_ext = os.path.splitext(filename)[0]
+        base_stream_name = _sanitize_stream_segment(filename_no_ext, fallback="stream")
         
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-            tmp.write(await file.read())
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(payload)
             temp_path = tmp.name
             
+        con: duckdb.DuckDBPyConnection | None = None
+        workbook: Any | None = None
+        generated_parquet_paths: list[str] = []
         try:
-            parquet_path = temp_path + ".parquet"
-            if file.filename.lower().endswith(('.xlsx', '.xls')):
+            if _is_excel_extension(ext):
                 import pandas as pd
-                df = pd.read_excel(temp_path)
-                df.columns = [str(c) for c in df.columns]  # ensure string columns
-                df.to_parquet(parquet_path, engine="pyarrow")
+
+                mode, requested_sheet = _resolve_excel_selection(excel_selection)
+                engine = "openpyxl" if ext == ".xlsx" else "xlrd"
+                workbook = pd.ExcelFile(temp_path, engine=engine)
+                available_sheets = [str(s) for s in workbook.sheet_names]
+                if mode == "all":
+                    selected_sheets = available_sheets
+                else:
+                    selected_sheets = [
+                        _resolve_selected_sheet(available_sheets, requested_sheet)
+                    ]
+
+                for sheet in selected_sheets:
+                    df = pd.read_excel(workbook, sheet_name=sheet)
+                    df.columns = [str(c) for c in df.columns]
+
+                    sheet_suffix = _sanitize_stream_segment(sheet, fallback="sheet")
+                    stream_name = (
+                        f"{base_stream_name}_{sheet_suffix}"
+                        if mode == "all"
+                        else base_stream_name
+                    )
+                    parquet_path = f"{temp_path}.{sheet_suffix}.parquet"
+                    generated_parquet_paths.append(parquet_path)
+                    df.to_parquet(parquet_path, engine="pyarrow")
+
+                    safe_filename = re.sub(r"[^a-zA-Z0-9_.-]+", "_", filename)
+                    blob_name = f"{prefix}/{stream_name}/{safe_filename}.parquet"
+                    with open(parquet_path, "rb") as fh:
+                        container.upload_blob(name=blob_name, data=fh, overwrite=True)
+                    if stream_name not in streams_added:
+                        streams_added.append(stream_name)
             else:
+                parquet_path = temp_path + ".parquet"
+                generated_parquet_paths.append(parquet_path)
                 con = duckdb.connect(database=":memory:")
-                if file.filename.lower().endswith('.json'):
+                if ext == ".json":
                     con.execute(f"COPY (SELECT * FROM read_json_auto('{temp_path}')) TO '{parquet_path}' (FORMAT PARQUET)")
-                elif file.filename.lower().endswith('.parquet'):
+                elif ext == ".parquet":
                     import shutil
                     shutil.copy(temp_path, parquet_path)
                 else:
                     con.execute(f"COPY (SELECT * FROM read_csv_auto('{temp_path}')) TO '{parquet_path}' (FORMAT PARQUET)")
             
-            safe_filename = re.sub(r"[^a-zA-Z0-9_.-]+", "_", file.filename)
-            blob_name = f"{prefix}/{stream_name}/{safe_filename}.parquet"
-            with open(parquet_path, "rb") as fh:
-                container.upload_blob(name=blob_name, data=fh, overwrite=True)
-            if stream_name not in streams_added:
-                streams_added.append(stream_name)
+                safe_filename = re.sub(r"[^a-zA-Z0-9_.-]+", "_", filename)
+                blob_name = f"{prefix}/{base_stream_name}/{safe_filename}.parquet"
+                with open(parquet_path, "rb") as fh:
+                    container.upload_blob(name=blob_name, data=fh, overwrite=True)
+                if base_stream_name not in streams_added:
+                    streams_added.append(base_stream_name)
         except Exception as exc:
-            logger.exception("Failed to process local file upload: %s", file.filename)
-            raise HTTPException(status_code=400, detail=f"Failed to process {file.filename}: {exc}") from exc
+            logger.exception("Failed to process local file upload: %s", filename)
+            _raise_local_file_processing_error(
+                filename=filename, ext=ext, action="process", exc=exc
+            )
         finally:
+            if con is not None:
+                con.close()
+            _close_excel_workbook(workbook)
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-            if 'parquet_path' in locals() and os.path.exists(parquet_path):
-                os.unlink(parquet_path)
+            for parquet_path in generated_parquet_paths:
+                if os.path.exists(parquet_path):
+                    os.unlink(parquet_path)
 
     invalidate_stream_cache()
 

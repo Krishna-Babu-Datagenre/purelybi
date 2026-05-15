@@ -589,4 +589,6 @@ export interface RawTablePreview {
   offset: number;
   has_more: boolean;
   months_included: string[];
+  sheet_name?: string | null;
+  available_sheets?: string[];
 }

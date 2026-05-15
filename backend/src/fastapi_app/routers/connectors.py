@@ -9,7 +9,9 @@ caller or the handler returns 404.
 
 from __future__ import annotations
 
+import json
 from datetime import date
+from typing import Any
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
@@ -239,16 +241,13 @@ def delete_my_connector(
 @router.post("/upload/preview", response_model=RawTablePreview)
 async def preview_local_upload(
     file: UploadFile = File(...),
+    sheet_name: str | None = Form(None),
+    all_sheets: bool = Form(False),
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Preview a single uploaded file (CSV, JSON, Excel, Parquet)."""
     del user
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided.")
-    data = await preview_local_file(file)
-    if data is None:
-        raise HTTPException(status_code=400, detail="Could not preview file.")
-    return data
+    return await preview_local_file(file, sheet_name=sheet_name, all_sheets=all_sheets)
 
 
 @router.post("/upload", response_model=UserConnectorConfig)
@@ -256,6 +255,7 @@ async def upload_local_files(
     files: list[UploadFile] = File(...),
     source_name: str = Form(...),
     config_id: str | None = Form(None),
+    excel_sheet_selections: str | None = Form(None),
     user: UserProfile = Depends(get_current_user_dep),
 ):
     """Upload multiple local files directly as a data source."""
@@ -265,7 +265,29 @@ async def upload_local_files(
     # If this is a new config (not updating an existing one), check limits
     if config_id is None and not can_add_source(user.id):
         raise HTTPException(status_code=403, detail="Data source limit reached for your current plan.")
+
+    parsed_excel_sheet_selections: list[dict[str, Any] | None] | None = None
+    if excel_sheet_selections:
+        try:
+            parsed = json.loads(excel_sheet_selections)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid excel_sheet_selections payload.",
+            ) from exc
+        if not isinstance(parsed, list):
+            raise HTTPException(
+                status_code=400,
+                detail="excel_sheet_selections must be a JSON array.",
+            )
+        parsed_excel_sheet_selections = [
+            item if item is None or isinstance(item, dict) else None for item in parsed
+        ]
         
     return await process_local_file_upload(
-        user_id=user.id, files=files, source_name=source_name, config_id=config_id
+        user_id=user.id,
+        files=files,
+        source_name=source_name,
+        config_id=config_id,
+        excel_sheet_selections=parsed_excel_sheet_selections,
     )

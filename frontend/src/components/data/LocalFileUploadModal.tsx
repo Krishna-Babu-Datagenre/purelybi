@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, UploadCloud, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
 import { previewLocalFile, uploadLocalFiles } from '../../services/backendClient';
+import type { ExcelSheetUploadSelection } from '../../services/backendClient';
 import type { RawTablePreview, UserConnectorConfig } from '../../types';
 
 interface LocalFileUploadModalProps {
@@ -11,6 +12,26 @@ interface LocalFileUploadModalProps {
 }
 
 const ACCEPTED_FORMATS = '.csv,.json,.parquet,.xlsx,.xls';
+const ALL_SHEETS_OPTION = '__all_sheets__';
+
+type ExcelUploadChoice = {
+  mode: 'single' | 'all';
+  sheetName?: string;
+  previewSheetName?: string;
+};
+
+function isExcelFile(file: File): boolean {
+  return /\.(xlsx|xls)$/i.test(file.name);
+}
+
+function getFileBaseKey(file: File): string {
+  return `${file.name}-${file.size}`;
+}
+
+function getPreviewKey(file: File, sheetName?: string): string {
+  const base = getFileBaseKey(file);
+  return `${base}::${sheetName ?? '__default__'}`;
+}
 
 export default function LocalFileUploadModal({
   onClose,
@@ -24,6 +45,8 @@ export default function LocalFileUploadModal({
   const [previews, setPreviews] = useState<Record<string, RawTablePreview>>({});
   const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = useState<Record<string, string>>({});
+  const [excelSheetsByFile, setExcelSheetsByFile] = useState<Record<string, string[]>>({});
+  const [excelChoiceByFile, setExcelChoiceByFile] = useState<Record<string, ExcelUploadChoice>>({});
   
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -42,6 +65,23 @@ export default function LocalFileUploadModal({
   };
 
   const removeFile = (index: number) => {
+    const removedFile = files[index];
+    if (removedFile) {
+      const removedKey = getFileBaseKey(removedFile);
+      setExcelSheetsByFile((prev) => {
+        if (!(removedKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[removedKey];
+        return next;
+      });
+      setExcelChoiceByFile((prev) => {
+        if (!(removedKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[removedKey];
+        return next;
+      });
+    }
+
     setFiles((prev) => prev.filter((_, i) => i !== index));
     if (activeTab === index) {
       setActiveTab(Math.max(0, index - 1));
@@ -56,26 +96,136 @@ export default function LocalFileUploadModal({
     const activeFile = files[activeTab];
     if (!activeFile) return;
 
-    const fileKey = `${activeFile.name}-${activeFile.size}`;
-    if (previews[fileKey] || previewLoading[fileKey] || previewError[fileKey]) {
+    const fileBaseKey = getFileBaseKey(activeFile);
+    const choice = excelChoiceByFile[fileBaseKey];
+    const previewSheetName = isExcelFile(activeFile)
+      ? (choice?.mode === 'all' ? choice.previewSheetName : choice?.sheetName)
+      : undefined;
+    const filePreviewKey = getPreviewKey(activeFile, previewSheetName);
+
+    if (previews[filePreviewKey] || previewLoading[filePreviewKey] || previewError[filePreviewKey]) {
       return;
     }
 
-    setPreviewLoading((prev) => ({ ...prev, [fileKey]: true }));
-    previewLocalFile(activeFile)
+    setPreviewLoading((prev) => ({ ...prev, [filePreviewKey]: true }));
+    previewLocalFile(activeFile, {
+      sheetName: previewSheetName,
+      allSheets: choice?.mode === 'all',
+    })
       .then((data) => {
-        setPreviews((prev) => ({ ...prev, [fileKey]: data }));
+        setPreviews((prev) => ({ ...prev, [filePreviewKey]: data }));
+
+        if (!isExcelFile(activeFile)) return;
+
+        const availableSheets = data.available_sheets ?? [];
+        if (availableSheets.length === 0) return;
+
+        setExcelSheetsByFile((prev) => ({
+          ...prev,
+          [fileBaseKey]: availableSheets,
+        }));
+
+        setExcelChoiceByFile((prev) => {
+          const existing = prev[fileBaseKey];
+          const fallbackSheet = data.sheet_name ?? availableSheets[0];
+          if (!fallbackSheet) return prev;
+          if (!existing) {
+            return {
+              ...prev,
+              [fileBaseKey]: {
+                mode: 'single',
+                sheetName: fallbackSheet,
+                previewSheetName: fallbackSheet,
+              },
+            };
+          }
+
+          if (existing.mode === 'all') {
+            const nextPreview =
+              existing.previewSheetName && availableSheets.includes(existing.previewSheetName)
+                ? existing.previewSheetName
+                : fallbackSheet;
+            return {
+              ...prev,
+              [fileBaseKey]: {
+                ...existing,
+                previewSheetName: nextPreview,
+              },
+            };
+          }
+
+          const nextSheet =
+            existing.sheetName && availableSheets.includes(existing.sheetName)
+              ? existing.sheetName
+              : fallbackSheet;
+          return {
+            ...prev,
+            [fileBaseKey]: {
+              mode: 'single',
+              sheetName: nextSheet,
+              previewSheetName: nextSheet,
+            },
+          };
+        });
       })
       .catch((err) => {
         setPreviewError((prev) => ({
           ...prev,
-          [fileKey]: err instanceof Error ? err.message : 'Could not preview file',
+          [filePreviewKey]: err instanceof Error ? err.message : 'Could not preview file',
         }));
       })
       .finally(() => {
-        setPreviewLoading((prev) => ({ ...prev, [fileKey]: false }));
+        setPreviewLoading((prev) => ({ ...prev, [filePreviewKey]: false }));
       });
-  }, [activeTab, files, previews, previewLoading, previewError]);
+  }, [activeTab, files, previews, previewLoading, previewError, excelChoiceByFile]);
+
+  const handleExcelUploadChoiceChange = (selection: string) => {
+    const active = files[activeTab];
+    if (!active || !isExcelFile(active)) return;
+
+    const fileBaseKey = getFileBaseKey(active);
+    const sheets = excelSheetsByFile[fileBaseKey] ?? [];
+    const fallbackSheet = sheets[0];
+    if (!fallbackSheet) return;
+
+    if (selection === ALL_SHEETS_OPTION) {
+      setExcelChoiceByFile((prev) => ({
+        ...prev,
+        [fileBaseKey]: {
+          mode: 'all',
+          previewSheetName: prev[fileBaseKey]?.previewSheetName ?? fallbackSheet,
+        },
+      }));
+      return;
+    }
+
+    setExcelChoiceByFile((prev) => ({
+      ...prev,
+      [fileBaseKey]: {
+        mode: 'single',
+        sheetName: selection,
+        previewSheetName: selection,
+      },
+    }));
+  };
+
+  const handleExcelPreviewSheetChange = (sheetName: string) => {
+    const active = files[activeTab];
+    if (!active || !isExcelFile(active)) return;
+
+    const fileBaseKey = getFileBaseKey(active);
+    setExcelChoiceByFile((prev) => {
+      const existing = prev[fileBaseKey];
+      if (!existing || existing.mode !== 'all') return prev;
+      return {
+        ...prev,
+        [fileBaseKey]: {
+          ...existing,
+          previewSheetName: sheetName,
+        },
+      };
+    });
+  };
 
   const handleUpload = async () => {
     if (!sourceName.trim() && !initialConfigId) {
@@ -90,7 +240,25 @@ export default function LocalFileUploadModal({
     setUploading(true);
     setUploadError(null);
     try {
-      const config = await uploadLocalFiles(files, sourceName.trim(), initialConfigId);
+      const excelSelections: Array<ExcelSheetUploadSelection | null> = files.map((file) => {
+        if (!isExcelFile(file)) return null;
+        const fileBaseKey = getFileBaseKey(file);
+        const choice = excelChoiceByFile[fileBaseKey];
+        if (!choice || choice.mode === 'single') {
+          return {
+            mode: 'single',
+            sheetName: choice?.sheetName,
+          };
+        }
+        return { mode: 'all' };
+      });
+
+      const config = await uploadLocalFiles(
+        files,
+        sourceName.trim(),
+        initialConfigId,
+        excelSelections,
+      );
       onSuccess(config);
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed.');
@@ -100,7 +268,15 @@ export default function LocalFileUploadModal({
   };
 
   const activeFile = files[activeTab];
-  const activeFileKey = activeFile ? `${activeFile.name}-${activeFile.size}` : '';
+  const activeFileBaseKey = activeFile ? getFileBaseKey(activeFile) : '';
+  const activeChoice = activeFileBaseKey ? excelChoiceByFile[activeFileBaseKey] : undefined;
+  const activeSheets = activeFileBaseKey ? excelSheetsByFile[activeFileBaseKey] ?? [] : [];
+  const activePreviewSheet = activeFile
+    ? (isExcelFile(activeFile)
+      ? (activeChoice?.mode === 'all' ? activeChoice.previewSheetName : activeChoice?.sheetName)
+      : undefined)
+    : undefined;
+  const activePreviewKey = activeFile ? getPreviewKey(activeFile, activePreviewSheet) : '';
 
   return (
     <div
@@ -207,12 +383,46 @@ export default function LocalFileUploadModal({
 
               {/* Preview Content */}
               <div className="flex-1 min-h-0 bg-[var(--bg-canvas)] overflow-auto relative">
-                {!activeFileKey && (
+                {activeFile && isExcelFile(activeFile) && activeSheets.length > 0 && (
+                  <div className="sticky top-0 z-20 border-b border-[var(--border-default)] bg-[var(--bg-surface)]/95 px-4 py-3 backdrop-blur-sm">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="text-xs text-[var(--text-secondary)] flex items-center gap-2">
+                        <span className="font-medium">Upload</span>
+                        <select
+                          value={activeChoice?.mode === 'all' ? ALL_SHEETS_OPTION : (activeChoice?.sheetName ?? activeSheets[0])}
+                          onChange={(e) => handleExcelUploadChoiceChange(e.target.value)}
+                          className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-canvas)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+                        >
+                          <option value={ALL_SHEETS_OPTION}>All Sheets</option>
+                          {activeSheets.map((sheet) => (
+                            <option key={sheet} value={sheet}>{sheet}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {activeChoice?.mode === 'all' && (
+                        <label className="text-xs text-[var(--text-secondary)] flex items-center gap-2">
+                          <span className="font-medium">Preview</span>
+                          <select
+                            value={activeChoice.previewSheetName ?? activeSheets[0]}
+                            onChange={(e) => handleExcelPreviewSheetChange(e.target.value)}
+                            className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-canvas)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+                          >
+                            {activeSheets.map((sheet) => (
+                              <option key={sheet} value={sheet}>{sheet}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {!activePreviewKey && (
                   <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)]">
                     Select a file to preview
                   </div>
                 )}
-                {activeFileKey && previewLoading[activeFileKey] && (
+                {activePreviewKey && previewLoading[activePreviewKey] && (
                   <div className="absolute inset-0 flex items-center justify-center">
                     <div className="animate-spin text-[var(--brand)]">
                       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -221,17 +431,17 @@ export default function LocalFileUploadModal({
                     </div>
                   </div>
                 )}
-                {activeFileKey && previewError[activeFileKey] && (
+                {activePreviewKey && previewError[activePreviewKey] && (
                   <div className="absolute inset-0 flex items-center justify-center flex-col text-red-400/90 gap-2 p-6 text-center">
                     <AlertCircle size={32} />
-                    <p className="text-sm">{previewError[activeFileKey]}</p>
+                    <p className="text-sm">{previewError[activePreviewKey]}</p>
                   </div>
                 )}
-                {activeFileKey && previews[activeFileKey] && (
+                {activePreviewKey && previews[activePreviewKey] && (
                   <table className="w-full text-left border-collapse text-sm">
                     <thead className="sticky top-0 bg-[var(--bg-surface)] z-10 border-b border-[var(--border-default)] shadow-sm">
                       <tr>
-                        {previews[activeFileKey].columns.map((col, i) => (
+                        {previews[activePreviewKey].columns.map((col, i) => (
                           <th key={i} className="px-4 py-2 font-medium text-[var(--text-secondary)] whitespace-nowrap">
                             {col}
                           </th>
@@ -239,7 +449,7 @@ export default function LocalFileUploadModal({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--border-subtle)]">
-                      {previews[activeFileKey].rows.map((row, rIdx) => (
+                      {previews[activePreviewKey].rows.map((row, rIdx) => (
                         <tr key={rIdx} className="hover:bg-[var(--bg-surface)]/50 transition-colors">
                           {row.map((cell, cIdx) => (
                             <td key={cIdx} className="px-4 py-2 text-[var(--text-primary)] whitespace-nowrap overflow-hidden max-w-[200px] text-ellipsis">
@@ -248,9 +458,9 @@ export default function LocalFileUploadModal({
                           ))}
                         </tr>
                       ))}
-                      {previews[activeFileKey].rows.length === 0 && (
+                      {previews[activePreviewKey].rows.length === 0 && (
                         <tr>
-                          <td colSpan={previews[activeFileKey].columns.length || 1} className="px-4 py-8 text-center text-[var(--text-muted)] italic">
+                          <td colSpan={previews[activePreviewKey].columns.length || 1} className="px-4 py-8 text-center text-[var(--text-muted)] italic">
                             No rows found in this file.
                           </td>
                         </tr>
