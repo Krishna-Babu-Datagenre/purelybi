@@ -12,7 +12,7 @@ Use this runbook whenever you change `sync_uploader.py`, `credential_refresh.py`
 
 ## 1) Build and push image
 
-Run from this folder (`docker-image/`):
+Run from this folder (`sync-uploader/`):
 
 ```powershell
 az acr login --name acrpurelybiv2devci
