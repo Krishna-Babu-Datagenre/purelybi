@@ -1,7 +1,7 @@
 /**
  * Purely BI — marketing landing (client-only: motion + scroll).
  */
-import { useRef, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import {
   MotionConfig,
   motion,
@@ -212,73 +212,141 @@ function HeroParallax({ onOpenAuth, onWatchDemo }: { onOpenAuth: () => void; onW
 const features = [
   {
     icon: Plug,
-    title: '500+ connectors',
-    body: 'Connect warehouses, SaaS, ads, and spreadsheets — then keep them in sync automatically.',
+    title: 'Multi-source integrations',
+    body: 'Connect warehouses, SaaS tools, ad platforms, and spreadsheets — then keep them in sync on your schedule.',
   },
   {
     icon: MessageSquare,
     title: 'Natural language setup',
-    body: 'Describe what you want connected; Purely BI maps the right sources and schedules.',
+    body: 'Describe what you want connected; Purely BI maps the right sources, tables, and sync schedules automatically.',
   },
   {
     icon: BarChart3,
     title: 'Ask questions in plain English',
-    body: 'Explore metrics, drill into segments, and get explanations you can share with stakeholders.',
+    body: 'Explore metrics, drill into segments, and get AI-generated explanations you can share with any stakeholder.',
   },
   {
     icon: LayoutDashboard,
     title: 'Dynamic reports & dashboards',
-    body: 'Compose mixed visuals, KPI blocks, and layouts that refresh as your data updates.',
+    body: 'Compose mixed visuals, KPI blocks, and flexible layouts that refresh automatically as your data updates.',
   },
   {
     icon: Bell,
     title: 'Scheduled alerts',
-    body: 'Get notified when thresholds break or trends shift — before they become surprises.',
+    body: 'Get notified when thresholds break or trends shift — before they become surprises — on any cadence.',
   },
   {
     icon: Zap,
-    title: 'Built for speed',
-    body: 'A fast, focused UI that keeps you in flow from first connection to final export.',
+    title: 'AI credits & collaboration',
+    body: 'Included AI credits power every query and report. Share dashboards with teammates at read or edit access.',
   },
 ];
 
 const pricingTiers = [
   {
-    name: 'Starter',
-    price: '$29',
+    name: 'Free',
+    price: '$0',
+    yearlyMonthly: null,
+    yearlyTotal: null,
     period: '/month',
-    blurb: 'For individuals and small teams getting started with unified insights.',
-    features: ['Up to 3 data sources', 'Natural language Q&A', '5 scheduled reports', 'Email support'],
+    blurb: 'Try Purely BI free for 7 days. No credit card required.',
+    features: [
+      '1 data source',
+      '25 AI credits',
+      '1 dashboard',
+      'Sync once per day',
+      '100 MB storage',
+    ],
     cta: 'Start free trial',
     highlighted: false,
+    badge: '7-day trial',
   },
   {
-    name: 'Growth',
-    price: '$99',
+    name: 'Starter',
+    price: '$49',
+    yearlyMonthly: '$41',
+    yearlyTotal: '$490',
     period: '/month',
-    blurb: 'For growing teams that need scale, alerts, and shared workspaces.',
+    blurb: 'For individuals and small teams getting started with unified data insights.',
     features: [
-      'Unlimited sources',
-      'Advanced NL + report builder',
-      'Scheduled alerts & webhooks',
-      'Priority chat support',
-      'SSO (SAML)',
+      'Up to 3 data sources',
+      '200 AI credits / month',
+      'Up to 5 dashboards',
+      'Sync every 2 hours',
+      '1 GB storage',
+      'Email support',
+    ],
+    cta: 'Get started',
+    highlighted: false,
+    badge: undefined,
+  },
+  {
+    name: 'Pro',
+    price: '$149',
+    yearlyMonthly: '$124',
+    yearlyTotal: '$1,490',
+    period: '/month',
+    blurb: 'For growing teams that need more sources, faster syncs, and advanced reporting.',
+    features: [
+      'Up to 5 data sources',
+      '500 AI credits / month',
+      'Up to 15 dashboards',
+      'Sync every hour',
+      '5 GB storage',
+      'Read-only dashboard sharing',
+      'Basic alerts',
     ],
     cta: 'Get started',
     highlighted: true,
+    badge: undefined,
+  },
+  {
+    name: 'Growth',
+    price: '$299',
+    yearlyMonthly: '$249',
+    yearlyTotal: '$2,990',
+    period: '/month',
+    blurb: 'For data-driven teams that need scale, near-real-time sync, and full collaboration.',
+    features: [
+      'Up to 10 data sources',
+      '1,000 AI credits / month',
+      'Unlimited dashboards',
+      'Sync every 10 minutes',
+      '10 GB storage',
+      'Dashboard sharing (read & edit)',
+      'Advanced alerts & webhooks',
+      'SSO (SAML)',
+    ],
+    cta: 'Get started',
+    highlighted: false,
+    badge: undefined,
   },
   {
     name: 'Enterprise',
     price: 'Custom',
+    yearlyMonthly: null,
+    yearlyTotal: null,
     period: '',
     blurb: 'Security, governance, and dedicated support for organization-wide data programs.',
-    features: ['VPC & data residency options', 'Dedicated CSM', 'SLA & audit support', 'Custom connectors'],
+    features: [
+      'Unlimited sources & dashboards',
+      '5,000+ AI credits / month',
+      '100 GB+ storage',
+      'Sync every 10 minutes',
+      'Dashboard sharing (read & edit)',
+      'Advanced alerts & webhooks',
+      'SSO, VPC & data residency',
+      'Dedicated CSM & SLA support',
+      'Custom connectors',
+    ],
     cta: 'Talk to sales',
     highlighted: false,
+    badge: undefined,
   },
 ];
 
 export default function LandingPage({ onOpenAuth }: LandingPageProps) {
+  const [isYearly, setIsYearly] = useState(false);
   const scrollToDemo = () => {
     document.getElementById('demo')?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -444,7 +512,39 @@ export default function LandingPage({ onOpenAuth }: LandingPageProps) {
                   integrations.
                 </p>
               </FadeIn>
-              <div className="mt-10 grid gap-4 lg:grid-cols-3">
+
+              {/* Billing toggle */}
+              <div className="mt-8 flex items-center justify-center">
+                <div className="inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--bg-surface)]/80 p-1 backdrop-blur-sm">
+                  <button
+                    type="button"
+                    onClick={() => setIsYearly(false)}
+                    className={`rounded-full px-5 py-2 text-sm font-semibold transition-all ${
+                      !isYearly
+                        ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)] shadow'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                    }`}
+                  >
+                    Monthly
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsYearly(true)}
+                    className={`inline-flex items-center gap-2 rounded-full px-5 py-2 text-sm font-semibold transition-all ${
+                      isYearly
+                        ? 'bg-[var(--bg-elevated)] text-[var(--text-primary)] shadow'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                    }`}
+                  >
+                    Yearly
+                    <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-400">
+                      2 months free
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
                 {pricingTiers.map((tier, i) => (
                   <FadeIn key={tier.name} delay={i * 0.06}>
                     <div
@@ -459,13 +559,29 @@ export default function LandingPage({ onOpenAuth }: LandingPageProps) {
                           Most popular
                         </span>
                       )}
+                      {tier.badge && !tier.highlighted && (
+                        <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full border border-[var(--border-default)] bg-[var(--bg-elevated)] px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]">
+                          {tier.badge}
+                        </span>
+                      )}
                       <h3 className="text-lg font-semibold text-[var(--text-primary)]">{tier.name}</h3>
                       <p className="mt-2 min-h-[40px] text-sm text-[var(--text-secondary)]">{tier.blurb}</p>
-                      <div className="mt-6 flex items-baseline gap-1">
-                        <span className="text-4xl font-bold tracking-tight text-[var(--text-primary)]">{tier.price}</span>
-                        {tier.period ? (
-                          <span className="text-sm text-[var(--text-muted)]">{tier.period}</span>
-                        ) : null}
+                      <div className="mt-6">
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-4xl font-bold tracking-tight text-[var(--text-primary)]">
+                            {isYearly && tier.yearlyMonthly ? tier.yearlyMonthly : tier.price}
+                          </span>
+                          {(isYearly ? tier.yearlyMonthly : tier.period) ? (
+                            <span className="text-sm text-[var(--text-muted)]">/month</span>
+                          ) : null}
+                        </div>
+                        {isYearly && tier.yearlyTotal ? (
+                          <p className="mt-1 text-xs text-[var(--text-muted)]">
+                            billed {tier.yearlyTotal} / year
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-xs text-transparent select-none">&nbsp;</p>
+                        )}
                       </div>
                       <ul className="mt-6 flex flex-1 flex-col gap-3">
                         {tier.features.map((line) => (
