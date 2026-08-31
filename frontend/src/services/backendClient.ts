@@ -36,7 +36,7 @@ function isNetworkError(err: unknown): boolean {
   return false;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetchWithAuthRetry(path, {
@@ -69,7 +69,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** Same as request but for 204 No Content — no JSON body. */
-async function requestNoContent(path: string, init?: RequestInit): Promise<void> {
+export async function requestNoContent(path: string, init?: RequestInit): Promise<void> {
   let res: Response;
   try {
     res = await fetchWithAuthRetry(path, {

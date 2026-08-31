@@ -25,6 +25,7 @@ from fastapi_app.routers import (
     chat,
     connectors,
     dashboards,
+    de,
     metadata,
     onboarding,
     templates,
@@ -52,6 +53,24 @@ def _cors_extra_origins() -> list[str]:
     """Production frontends (e.g. Azure Static Web Apps), comma-separated in env."""
     raw = os.environ.get("CORS_EXTRA_ORIGINS", "")
     return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def _cors_dev_origins() -> list[str]:
+    """Common local dev frontends to avoid preflight surprises across host variants."""
+    return [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://0.0.0.0:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        "http://0.0.0.0:4173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://0.0.0.0:3000",
+        "http://[::1]:5173",
+        "http://[::1]:4173",
+        "http://[::1]:3000",
+    ]
 
 
 _TAGS = [
@@ -92,6 +111,10 @@ _TAGS = [
         "name": "billing",
         "description": "Stripe checkout, billing portal, and webhook-backed subscription sync.",
     },
+    {
+        "name": "data-engineering",
+        "description": "DE pipeline builder: recipes, steps, sample validation, and run history.",
+    },
 ]
 
 app = FastAPI(
@@ -107,8 +130,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_extra_origins(),
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=[*_cors_dev_origins(), *_cors_extra_origins()],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -213,8 +236,15 @@ app.include_router(agent.router)
 app.include_router(metadata.router)
 app.include_router(alerts.router)
 app.include_router(billing.router)
+app.include_router(de.router)
 
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.options("/{full_path:path}", include_in_schema=False)
+async def options_preflight_fallback(full_path: str):
+    """Fallback for OPTIONS so dev clients consistently get a 200 preflight response."""
+    return JSONResponse(status_code=status.HTTP_200_OK, content={"ok": True})

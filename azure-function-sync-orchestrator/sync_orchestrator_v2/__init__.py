@@ -62,6 +62,8 @@ def _get_env_vars() -> None:
     global FILESHARE_CONN_STR, FILESHARE_NAME
     global BLOB_CONN_STR, BLOB_CONTAINER
     global SYNC_UPLOADER_IMAGE
+    global DE_PIPELINE_ENABLED, DE_PIPELINE_ACA_JOB_NAME, DE_PIPELINE_ACA_CONTAINER_NAME
+    global DE_PIPELINE_IMAGE, DE_TRANSFORMED_CONTAINER, DE_TRANSFORMED_PREFIX
 
     SUPABASE_URL = _env("SUPABASE_URL")
     SUPABASE_SERVICE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY")
@@ -74,6 +76,12 @@ def _get_env_vars() -> None:
     BLOB_CONN_STR = _env("AZURE_STORAGE_CONNECTION_STRING")
     BLOB_CONTAINER = _env("BLOB_CONTAINER_NAME", "raw")
     SYNC_UPLOADER_IMAGE = _env("SYNC_UPLOADER_IMAGE")
+    DE_PIPELINE_ENABLED = _env("DE_PIPELINE_ENABLED", "false").lower() in ("1", "true", "yes")
+    DE_PIPELINE_ACA_JOB_NAME = _env("DE_PIPELINE_ACA_JOB_NAME", "")
+    DE_PIPELINE_ACA_CONTAINER_NAME = _env("DE_PIPELINE_ACA_CONTAINER_NAME", "connector")
+    DE_PIPELINE_IMAGE = _env("DE_PIPELINE_IMAGE", "")
+    DE_TRANSFORMED_CONTAINER = _env("DE_TRANSFORMED_CONTAINER", "transformed")
+    DE_TRANSFORMED_PREFIX = _env("DE_TRANSFORMED_PREFIX", "")
 
 
 # Declare at module level so other functions can reference them
@@ -88,6 +96,12 @@ FILESHARE_NAME: str = ""
 BLOB_CONN_STR: str = ""
 BLOB_CONTAINER: str = ""
 SYNC_UPLOADER_IMAGE: str = ""
+DE_PIPELINE_ENABLED: bool = False
+DE_PIPELINE_ACA_JOB_NAME: str = ""
+DE_PIPELINE_ACA_CONTAINER_NAME: str = ""
+DE_PIPELINE_IMAGE: str = ""
+DE_TRANSFORMED_CONTAINER: str = ""
+DE_TRANSFORMED_PREFIX: str = ""
 
 # Circuit breaker: skip configs that have failed this many times consecutively
 MAX_CONSECUTIVE_FAILURES = 5
@@ -372,6 +386,178 @@ def start_uploader_execution(
     ).result()
 
     return str(getattr(result, "name", "") or "")
+
+
+def maybe_start_de_pipeline(
+    supabase: Client,
+    credential: DefaultAzureCredential,
+    *,
+    user_id: str,
+    connector_config_id: str,
+    sync_work_id: str,
+    docker_image: str,
+) -> None:
+    """Trigger DE pipeline runner after a successful uploader execution.
+
+    Best-effort by design: failures are logged and recorded in de_pipeline_runs,
+    but never flip the parent sync run back to failed.
+    """
+    if not DE_PIPELINE_ENABLED:
+        logger.info(
+            "de_trigger_checked skipped: reason=feature_disabled user_id=%s connector_config_id=%s",
+            user_id,
+            connector_config_id,
+        )
+        return
+
+    try:
+        pipeline_res = (
+            supabase.table("de_pipelines")
+            .select("id")
+            .eq("user_id", user_id)
+            .eq("connector_config_id", connector_config_id)
+            .eq("is_active", True)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        pipeline_rows = pipeline_res.data or []
+    except Exception:
+        logger.exception(
+            "de_trigger_checked failed to load pipeline: user_id=%s connector_config_id=%s",
+            user_id,
+            connector_config_id,
+        )
+        return
+
+    if not pipeline_rows:
+        logger.info(
+            "de_trigger_checked skipped: reason=no_active_pipeline user_id=%s connector_config_id=%s",
+            user_id,
+            connector_config_id,
+        )
+        return
+
+    pipeline_id = str(pipeline_rows[0]["id"])
+
+    def _create_run(*, status: str, error: str | None = None, started: bool = False) -> str | None:
+        payload: dict[str, Any] = {
+            "pipeline_id": pipeline_id,
+            "user_id": user_id,
+            "connector_config_id": connector_config_id,
+            "trigger_source": "sync_upload_success",
+            "status": status,
+            "sync_work_id": sync_work_id,
+        }
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if started:
+            payload["started_at"] = now_iso
+        if error:
+            payload["error"] = error
+            payload["ended_at"] = now_iso
+
+        created = supabase.table("de_pipeline_runs").insert(payload).execute()
+        rows = created.data or []
+        if rows:
+            return str(rows[0].get("id") or "") or None
+        return None
+
+    if not DE_PIPELINE_ACA_JOB_NAME or not DE_PIPELINE_IMAGE:
+        reason = (
+            "DE trigger misconfigured: DE_PIPELINE_ACA_JOB_NAME and "
+            "DE_PIPELINE_IMAGE are required"
+        )
+        try:
+            _create_run(status="failed_to_start", error=reason)
+        except Exception:
+            logger.exception("de_trigger_failed could not persist failed_to_start run")
+        logger.warning(
+            "de_trigger_started skipped: reason=misconfigured user_id=%s connector_config_id=%s",
+            user_id,
+            connector_config_id,
+        )
+        return
+
+    run_id: str | None = None
+    try:
+        run_id = _create_run(status="queued")
+        if not run_id:
+            logger.warning(
+                "de_trigger_started could not create run row user_id=%s connector_config_id=%s",
+                user_id,
+                connector_config_id,
+            )
+            return
+
+        env_list = [
+            {"name": "USER_ID", "value": user_id},
+            {"name": "CONNECTOR_CONFIG_ID", "value": connector_config_id},
+            {"name": "SYNC_WORK_ID", "value": sync_work_id},
+            {"name": "DE_PIPELINE_ID", "value": pipeline_id},
+            {"name": "DE_RUN_ID", "value": run_id},
+            {"name": "CONNECTOR_DOCKER_IMAGE", "value": docker_image},
+            {"name": "AZURE_STORAGE_CONNECTION_STRING", "value": BLOB_CONN_STR},
+            {"name": "RAW_CONTAINER_NAME", "value": BLOB_CONTAINER},
+            {"name": "TRANSFORMED_CONTAINER_NAME", "value": DE_TRANSFORMED_CONTAINER},
+            {"name": "SUPABASE_URL", "value": SUPABASE_URL},
+            {"name": "SUPABASE_SERVICE_ROLE_KEY", "value": SUPABASE_SERVICE_KEY},
+        ]
+        if DE_TRANSFORMED_PREFIX:
+            env_list.append({"name": "TRANSFORMED_PREFIX", "value": DE_TRANSFORMED_PREFIX})
+        user_data_prefix = os.environ.get("USER_DATA_BLOB_PREFIX")
+        if user_data_prefix:
+            env_list.append({"name": "USER_DATA_BLOB_PREFIX", "value": user_data_prefix})
+
+        client = ContainerAppsAPIClient(credential, AZURE_SUBSCRIPTION_ID)
+        container_override = {
+            "name": DE_PIPELINE_ACA_CONTAINER_NAME,
+            "image": DE_PIPELINE_IMAGE,
+            "env": env_list,
+        }
+        result = client.jobs.begin_start(
+            resource_group_name=AZURE_RESOURCE_GROUP,
+            job_name=DE_PIPELINE_ACA_JOB_NAME,
+            template={"containers": [container_override]},
+        ).result()
+        execution_name = str(getattr(result, "name", "") or "")
+        supabase.table("de_pipeline_runs").update(
+            {
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "aca_execution_name": execution_name,
+            }
+        ).eq("id", run_id).execute()
+
+        logger.info(
+            "de_trigger_started user_id=%s connector_config_id=%s pipeline_id=%s run_id=%s execution=%s",
+            user_id,
+            connector_config_id,
+            pipeline_id,
+            run_id,
+            execution_name,
+        )
+    except Exception as exc:
+        logger.exception(
+            "de_trigger_started failed user_id=%s connector_config_id=%s pipeline_id=%s",
+            user_id,
+            connector_config_id,
+            pipeline_id,
+        )
+        if run_id:
+            try:
+                supabase.table("de_pipeline_runs").update(
+                    {
+                        "status": "failed_to_start",
+                        "error": f"Failed to start DE ACA job: {type(exc).__name__}: {exc}",
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ).eq("id", run_id).execute()
+            except Exception:
+                logger.exception(
+                    "de_trigger_failed could not persist failed_to_start run user_id=%s connector_config_id=%s",
+                    user_id,
+                    connector_config_id,
+                )
 
 
 def poll_execution_status(
@@ -822,6 +1008,17 @@ def phase_check_uploading(supabase: Client, credential: DefaultAzureCredential) 
             if last_state is not None:
                 update_fields["last_airbyte_state"] = last_state
             mark_status(supabase, config_id, **update_fields)
+
+            # Best-effort DE trigger after upload success and status persistence.
+            maybe_start_de_pipeline(
+                supabase,
+                credential,
+                user_id=config["user_id"],
+                connector_config_id=config_id,
+                sync_work_id=work_id,
+                docker_image=config.get("docker_image", ""),
+            )
+
             cleanup_fileshare(work_id)
             completed += 1
             logger.info("Upload succeeded: config=%s state_captured=%s",

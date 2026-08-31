@@ -19,6 +19,7 @@ from ai.agents.dashboard.context import (
     reset_dashboard_tool_context,
     set_dashboard_tool_context,
 )
+from ai.agents.de import DEAgent
 from ai.agents.sql import AnalystAgent
 from ai.agents.sql.duckdb_sandbox import create_tenant_sandbox
 from ai.tools.sql.charts import (
@@ -39,6 +40,7 @@ _MAX_MAGIC_PROXY_ROUNDS = 12
 AGENT_CLASSES: dict[str, type] = {
     "analyst": AnalystAgent,
     "dashboard": DashboardBuilderAgent,
+    "de": DEAgent,
 }
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,9 @@ def _get_or_create_agent(
     *,
     dashboard_mode: str = "guided",
     dashboard_datasets_key: tuple[str, ...] | None = None,
+    pipeline_id: str | None = None,
+    connector_config_id: str | None = None,
+    connector_name: str | None = None,
 ):
     """
     Return the LangGraph agent for *session_id*, creating or recreating it
@@ -72,6 +77,15 @@ def _get_or_create_agent(
             database,
             dashboard_mode,
             dashboard_datasets_key,
+        )
+    elif agent_type == "de":
+        desired = (
+            tenant_id,
+            agent_type,
+            llm,
+            pipeline_id,
+            connector_config_id,
+            connector_name,
         )
     else:
         desired = (tenant_id, agent_type, llm, database)
@@ -102,7 +116,40 @@ def _get_or_create_agent(
     }
     conn = None
     discovered_tables: frozenset[str] = frozenset()
-    if database.lower() == "duckdb":
+    if agent_type == "de":
+        # DE agent does not use DuckDB — it operates via de_service directly.
+        resolved_connector_config_id = connector_config_id
+        resolved_connector_name = connector_name
+        if pipeline_id and (not resolved_connector_config_id or not resolved_connector_name):
+            try:
+                from fastapi_app.services import connector_service, de_service
+
+                pipeline = de_service.get_pipeline(user_id=tenant_id, pipeline_id=pipeline_id)
+                if pipeline is not None:
+                    resolved_connector_config_id = (
+                        resolved_connector_config_id or pipeline.connector_config_id
+                    )
+                    if not resolved_connector_name:
+                        row = connector_service.get_user_connector(
+                            tenant_id,
+                            pipeline.connector_config_id,
+                        )
+                        if row is not None:
+                            name = str(row.get("connector_name") or "").strip()
+                            resolved_connector_name = name or None
+            except Exception:
+                logger.exception(
+                    "Failed resolving connector context for DE agent session %s",
+                    session_id,
+                )
+
+        agent_kwargs["user_id"] = tenant_id
+        agent_kwargs["pipeline_id"] = pipeline_id
+        if resolved_connector_config_id:
+            agent_kwargs["connector_config_id"] = resolved_connector_config_id
+        if resolved_connector_name:
+            agent_kwargs["connector_name"] = resolved_connector_name
+    elif database.lower() == "duckdb":
         views_filter: frozenset[str] | None = None
         if agent_type == "dashboard" and dashboard_datasets_key is not None:
             views_filter = frozenset(dashboard_datasets_key)
@@ -337,6 +384,9 @@ async def stream_agent_response(
     magic_dashboard_name: str | None = None,
     magic_goal: str | None = None,
     attached_dashboard_name: str | None = None,
+    pipeline_id: str | None = None,
+    connector_config_id: str | None = None,
+    connector_name: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Async generator that yields **Server-Sent Event** (SSE) formatted
@@ -372,6 +422,9 @@ async def stream_agent_response(
             database=database,
             dashboard_mode=dashboard_mode,
             dashboard_datasets_key=ds_key,
+            pipeline_id=pipeline_id,
+            connector_config_id=connector_config_id,
+            connector_name=connector_name,
         )
     except ValueError as exc:
         yield _sse("start", {"status": "streaming"})

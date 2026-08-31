@@ -506,6 +506,20 @@ def _stream_names_for_row(user_id: str, row: dict[str, Any]) -> tuple[list[str],
     return synced_tables, prefix
 
 
+def resolve_connector_blob_prefix(user_id: str, config_id: str) -> str | None:
+    """Resolve raw blob prefix for a connector config.
+
+    Returns the matched prefix when blobs are discoverable, otherwise a
+    deterministic fallback prefix derived from connector metadata.
+    """
+    row = get_user_connector(user_id, config_id)
+    if not row:
+        return None
+    _, prefix = _stream_names_for_row(user_id, row)
+    clean = str(prefix or "").strip().strip("/")
+    return clean or None
+
+
 def build_stream_parquet_zip(
     user_id: str,
     config_id: str,

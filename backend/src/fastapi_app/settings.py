@@ -146,3 +146,22 @@ METADATA_GENERATOR_ACA_JOB_NAME: str = _env("METADATA_GENERATOR_ACA_JOB_NAME")
 METADATA_GENERATOR_ACA_CONTAINER_NAME: str = _env(
     "METADATA_GENERATOR_ACA_CONTAINER_NAME"
 )
+
+# ── Data Engineering pipeline runner ──
+# Global kill-switch; default off for safe rollout.
+DE_PIPELINE_ENABLED: bool = _env("DE_PIPELINE_ENABLED", "false").lower() in (
+    "1", "true", "yes"
+)
+DE_PIPELINE_IMAGE: str = _env("DE_PIPELINE_IMAGE")
+DE_PIPELINE_ACA_JOB_NAME: str = _env("DE_PIPELINE_ACA_JOB_NAME")
+DE_PIPELINE_ACA_CONTAINER_NAME: str = _env("DE_PIPELINE_ACA_CONTAINER_NAME", "connector")
+DE_TRANSFORMED_CONTAINER: str = _env("DE_TRANSFORMED_CONTAINER", "transformed")
+DE_TRANSFORMED_PREFIX: str = _env("DE_TRANSFORMED_PREFIX", "")
+# Prefer transformed data over raw in the query resolver (default on).
+DE_QUERY_PREFERS_TRANSFORMED: bool = _env(
+    "DE_QUERY_PREFERS_TRANSFORMED", "true"
+).lower() not in ("0", "false", "no")
+# Materialization metadata cache TTL (seconds).
+DE_MATERIALIZATION_CACHE_TTL: int = int(
+    _env("DE_MATERIALIZATION_CACHE_TTL", "60") or "60"
+)

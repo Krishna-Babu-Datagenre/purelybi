@@ -59,6 +59,18 @@ class ChatRequest(BaseModel):
             "When dashboard_mode is 'magic': dashboard title from setup (for User Proxy context)."
         ),
     )
+    pipeline_id: str | None = Field(
+        default=None,
+        description="When agent_type is 'de': the DE pipeline UUID to operate on.",
+    )
+    connector_config_id: str | None = Field(
+        default=None,
+        description="When agent_type is 'de': selected connector configuration UUID context.",
+    )
+    connector_name: str | None = Field(
+        default=None,
+        description="When agent_type is 'de': selected connector display name context.",
+    )
     magic_goal: str | None = Field(
         default=None,
         description="When dashboard_mode is 'magic': user-stated objective (for User Proxy context).",

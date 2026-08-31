@@ -307,6 +307,12 @@ export interface ChatSendRequest {
   magic_goal?: string;
   /** Analyst agent: name of dashboard the user has attached to the chat. */
   attached_dashboard_name?: string;
+  /** DE agent: pipeline UUID to operate on. */
+  pipeline_id?: string;
+  /** DE agent: selected connector configuration UUID context. */
+  connector_config_id?: string;
+  /** DE agent: selected connector display name context. */
+  connector_name?: string;
 }
 
 /** GET /api/dashboards/builder/readiness */

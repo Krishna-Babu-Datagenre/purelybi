@@ -13,6 +13,12 @@
     "AZURE_FILE_SHARE_NAME": "connector-data-v2",
     "AZURE_STORAGE_CONNECTION_STRING": "",
     "BLOB_CONTAINER_NAME": "raw",
-    "SYNC_UPLOADER_IMAGE": "acrpurelybisyncv2.azurecr.io/sync-uploader:latest"
+    "SYNC_UPLOADER_IMAGE": "acrpurelybisyncv2.azurecr.io/sync-uploader:latest",
+    "DE_PIPELINE_ENABLED": "false",
+    "DE_PIPELINE_ACA_JOB_NAME": "",
+    "DE_PIPELINE_ACA_CONTAINER_NAME": "connector",
+    "DE_PIPELINE_IMAGE": "",
+    "DE_TRANSFORMED_CONTAINER": "transformed",
+    "DE_TRANSFORMED_PREFIX": ""
   }
 }

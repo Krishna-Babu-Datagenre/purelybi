@@ -9,6 +9,7 @@ export const PAGE_PATHS: Record<ShellPage, string> = {
   'data-connect': '/data/connect',
   'data-manage': '/data/manage',
   'data-raw-tables': '/data/raw-tables',
+  'data-pipelines': '/data/pipelines',
   metadata: '/metadata',
   alerts: '/alerts',
   'alerts-create': '/alerts/create',
@@ -38,6 +39,7 @@ export function pathToPage(pathname: string): { page: ShellPage | null; dashboar
   if (pathname === '/data/connect') return { page: 'data-connect' };
   if (pathname === '/data/manage') return { page: 'data-manage' };
   if (pathname === '/data/raw-tables') return { page: 'data-raw-tables' };
+  if (pathname === '/data/pipelines') return { page: 'data-pipelines' };
   if (pathname === '/metadata') return { page: 'metadata' };
   if (pathname === '/alerts') return { page: 'alerts' };
   if (pathname === '/alerts/create') return { page: 'alerts-create' };

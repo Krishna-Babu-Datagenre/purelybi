@@ -41,6 +41,17 @@ _PREFIX_CACHE_TTL = 1800.0  # 30 min
 _container_client: ContainerClient | None = None
 _container_client_lock = threading.Lock()
 
+# Transformed-data materialization metadata cache: tenant_id → (rows, monotonic_ts)
+# Rows are dicts from de_dataset_materializations with keys: connector_config_id, status, output_prefix.
+_MAT_CACHE: dict[str, tuple[list[dict], float]] = {}
+_MAT_CACHE_LOCK = threading.Lock()
+# TTL read from env to keep it consistent with settings.DE_MATERIALIZATION_CACHE_TTL.
+_MAT_CACHE_TTL = float(os.environ.get("DE_MATERIALIZATION_CACHE_TTL", "60"))
+
+# Separate ContainerClient for the transformed blob container.
+_transformed_container_client: ContainerClient | None = None
+_transformed_container_client_lock = threading.Lock()
+
 # ---------------------------------------------------------------------------
 # Tenant sandbox pool — materialized DuckDB connections reused across requests.
 # ---------------------------------------------------------------------------
@@ -123,6 +134,118 @@ def _get_container_client() -> ContainerClient:
             _connection_string(), container_name=_container_name()
         )
         return _container_client
+
+
+def _transformed_container_name() -> str:
+    return os.environ.get("DE_TRANSFORMED_CONTAINER", "transformed")
+
+
+def _get_transformed_container_client() -> ContainerClient | None:
+    """Lazily-created ContainerClient for the transformed data container.
+
+    Returns None when the container name is not configured or when the
+    connection string is absent — callers must treat this as 'no transformed data'.
+    """
+    global _transformed_container_client
+    if _transformed_container_client is not None:
+        return _transformed_container_client
+    with _transformed_container_client_lock:
+        if _transformed_container_client is not None:
+            return _transformed_container_client
+        try:
+            cs = _connection_string()
+            name = _transformed_container_name()
+            _transformed_container_client = ContainerClient.from_connection_string(
+                cs, container_name=name
+            )
+        except Exception:
+            logger.warning("Could not create transformed container client; transformed-first routing disabled.")
+            return None
+        return _transformed_container_client
+
+
+def _fetch_tenant_materializations(tenant_id: str) -> list[dict]:
+    """Return de_dataset_materializations rows for *tenant_id* with caching.
+
+    Only rows with status='ready' and a non-empty output_prefix are useful;
+    callers should filter accordingly.
+    """
+    now = time.monotonic()
+    with _MAT_CACHE_LOCK:
+        cached = _MAT_CACHE.get(tenant_id)
+        if cached is not None and now - cached[1] < _MAT_CACHE_TTL:
+            return list(cached[0])
+
+    rows: list[dict] = []
+    try:
+        from fastapi_app.utils.supabase_client import get_supabase_admin_client  # lazy import
+
+        res = (
+            get_supabase_admin_client()
+            .table("de_dataset_materializations")
+            .select("connector_config_id,status,output_prefix")
+            .eq("user_id", tenant_id)
+            .eq("status", "ready")
+            .execute()
+        )
+        rows = [r for r in (res.data or []) if r.get("output_prefix")]
+    except Exception:
+        logger.warning("Failed to fetch DE materializations for tenant %s; using raw data.", tenant_id)
+
+    with _MAT_CACHE_LOCK:
+        _MAT_CACHE[tenant_id] = (rows, time.monotonic())
+    return rows
+
+
+def _discover_views_from_container(
+    container: ContainerClient,
+    prefix: str,
+    container_name: str,
+) -> dict[str, str]:
+    """Discover parquet views under *prefix* in *container*.
+
+    Mirrors the raw-data discovery logic so view names are identical to
+    what ``discover_tenant_views`` would produce for the same blob layout.
+    Returns ``{view_name: "azure://<container>/<blob_path>"}``.  Empty dict
+    when no parquet blobs are found.
+    """
+    dir_files: dict[str, list[str]] = defaultdict(list)
+    for blob in container.list_blobs(name_starts_with=prefix):
+        if not blob.name.endswith(".parquet"):
+            continue
+        relative = blob.name[len(prefix):]
+        parts = relative.split("/")
+        parent = "/".join(parts[:-1])
+        filename = parts[-1]
+        if parent:
+            dir_files[parent].append(filename)
+
+    if not dir_files:
+        return {}
+
+    base_url = f"azure://{container_name}/{prefix}"
+    all_dirs = set(dir_files.keys())
+    hive_roots: set[str] = set()
+    hive_dirs: set[str] = set()
+    for dir_path in all_dirs:
+        for i, part in enumerate(dir_path.split("/")):
+            if _HIVE_SEGMENT_RE.match(part):
+                root = "/".join(dir_path.split("/")[:i])
+                if root:
+                    hive_roots.add(root)
+                    hive_dirs.add(dir_path)
+                break
+
+    views: dict[str, str] = {}
+    for root in sorted(hive_roots):
+        views[_view_name(root)] = f"{base_url}{root}/**/*.parquet"
+    for dir_path in sorted(dir_files):
+        if dir_path in hive_dirs or any(dir_path.startswith(r + "/") for r in hive_roots):
+            continue
+        if dir_path in hive_roots:
+            continue
+        views[_view_name(dir_path)] = f"{base_url}{dir_path}/*.parquet"
+    return views
 
 
 def _tenant_prefix(tenant_id: str) -> str:
@@ -279,10 +402,12 @@ def list_tenant_dataset_view_names(tenant_id: str) -> list[str]:
 
 
 def invalidate_tenant_cache(tenant_id: str) -> None:
-    """Remove cached blob discovery and pooled connection for *tenant_id* (call after sync completes)."""
+    """Remove cached blob discovery, materialization metadata, and pooled connection for *tenant_id*."""
     with _VIEWS_CACHE_LOCK:
         _VIEWS_CACHE.pop(tenant_id, None)
     _PREFIX_CACHE.pop(tenant_id, None)
+    with _MAT_CACHE_LOCK:
+        _MAT_CACHE.pop(tenant_id, None)
     with _POOL_LOCK:
         entry = _POOL.pop(tenant_id, None)
     if entry is not None:
@@ -297,6 +422,8 @@ def invalidate_all_tenant_caches() -> None:
     with _VIEWS_CACHE_LOCK:
         _VIEWS_CACHE.clear()
     _PREFIX_CACHE.clear()
+    with _MAT_CACHE_LOCK:
+        _MAT_CACHE.clear()
     with _POOL_LOCK:
         old_entries = list(_POOL.values())
         _POOL.clear()
@@ -373,6 +500,51 @@ def _create_materialized_sandbox(
     )
 
     views = discover_tenant_views(tenant_id)
+
+    # ── Transformed-first overlay ────────────────────────────────────────
+    # For each connector config with a ready DE materialization, probe the
+    # transformed container and override the matching raw view paths.
+    # Any failure falls back to the raw path with a warning event.
+    de_enabled = os.environ.get("DE_QUERY_PREFERS_TRANSFORMED", "true").lower() not in ("0", "false", "no")
+    if de_enabled:
+        mats = _fetch_tenant_materializations(tenant_id)
+        if mats:
+            transformed_client = _get_transformed_container_client()
+            transformed_cname = _transformed_container_name()
+            if transformed_client is not None:
+                for mat in mats:
+                    output_prefix = str(mat.get("output_prefix") or "").strip("/")
+                    if not output_prefix:
+                        continue
+                    prefix_with_slash = output_prefix + "/"
+                    try:
+                        t_views = _discover_views_from_container(
+                            transformed_client, prefix_with_slash, transformed_cname
+                        )
+                        if t_views:
+                            views.update(t_views)
+                            logger.info(
+                                "de_query_transformed: tenant=%s connector=%s views=%s",
+                                tenant_id,
+                                mat.get("connector_config_id"),
+                                list(t_views.keys()),
+                            )
+                        else:
+                            logger.warning(
+                                "de_query_fallback_raw: tenant=%s connector=%s reason=empty_transformed_prefix prefix=%s",
+                                tenant_id,
+                                mat.get("connector_config_id"),
+                                output_prefix,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "de_query_fallback_raw: tenant=%s connector=%s reason=probe_error prefix=%s",
+                            tenant_id,
+                            mat.get("connector_config_id"),
+                            output_prefix,
+                        )
+    # ────────────────────────────────────────────────────────────────────
+
     succeeded: dict[str, str] = {}
     for view_name, blob_path in views.items():
         try:

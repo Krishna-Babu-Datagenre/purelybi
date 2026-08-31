@@ -16,6 +16,7 @@ import {
   SlidersHorizontal,
   Table,
   Database,
+  FastForward,
 } from 'lucide-react';
 import { useDashboardStore } from '../store/useDashboardStore';
 import { useAuthStore } from '../store/useAuthStore';
@@ -318,6 +319,14 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
               </button>
               <button
                 type="button"
+                onClick={() => setNavigationPage('data-pipelines')}
+                className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'data-pipelines' ? 'sidebar-item--active' : ''}`}
+                title="Data pipelines"
+              >
+                <FastForward size={20} />
+              </button>
+              <button
+                type="button"
                 onClick={() => setNavigationPage('data-raw-tables')}
                 className={`sidebar-item sidebar-item--collapsed ${navigationPage === 'data-raw-tables' ? 'sidebar-item--active' : ''}`}
                 title="View raw tables"
@@ -350,6 +359,14 @@ const Sidebar = ({ collapsed, onToggleCollapse }: SidebarProps) => {
               >
                 <SlidersHorizontal size={20} />
                 <span className="truncate">Manage</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setNavigationPage('data-pipelines')}
+                className={`sidebar-item ${navigationPage === 'data-pipelines' ? 'sidebar-item--active' : ''}`}
+              >
+                <FastForward size={20} />
+                <span className="truncate">Data pipelines</span>
               </button>
               <button
                 type="button"

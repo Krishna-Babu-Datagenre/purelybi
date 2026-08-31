@@ -15,6 +15,8 @@ import DashboardShareModal from './components/DashboardShareModal';
 import DataConnectPage from './components/data/DataConnectPage';
 import DataManagePage from './components/data/DataManagePage';
 import DataRawTablesPage from './components/data/DataRawTablesPage';
+import DataPipelinesPage from './components/data/DataPipelinesPage';
+
 import MetadataReviewPage from './components/data/MetadataReviewPage';
 import HomePage from './components/HomePage';
 import AlertsPage from './components/AlertsPage';
@@ -77,6 +79,7 @@ const App = () => {
     if (navigationPage === 'data-connect') return 'Connect a new source';
     if (navigationPage === 'data-manage') return 'Manage connections';
     if (navigationPage === 'data-raw-tables') return 'View raw tables';
+    if (navigationPage === 'data-pipelines') return 'Data engineering';
     if (navigationPage === 'metadata') return 'Metadata review';
     if (navigationPage === 'alerts') return 'Manage alerts';
     if (navigationPage === 'alerts-create') return 'Create alert';
@@ -423,6 +426,14 @@ const App = () => {
           )}
           {navigationPage === 'data-raw-tables' && (
             <DataRawTablesPage
+              sidebarCollapsed={sidebarCollapsed}
+              chatOpen={chatOpen}
+              chatModal={chatModal}
+              chatWidthPx={chatWidthPx}
+            />
+          )}
+          {navigationPage === 'data-pipelines' && (
+            <DataPipelinesPage
               sidebarCollapsed={sidebarCollapsed}
               chatOpen={chatOpen}
               chatModal={chatModal}

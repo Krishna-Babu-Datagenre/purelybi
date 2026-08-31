@@ -117,6 +117,7 @@ export type ShellPage =
   | 'data-connect'
   | 'data-manage'
   | 'data-raw-tables'
+  | 'data-pipelines'
   | 'metadata'
   | 'profile'
   | 'billing';

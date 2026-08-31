@@ -57,7 +57,7 @@ async def chat(
                 f"Valid options: {list(AGENT_CLASSES.keys())}"
             ),
         )
-    if request.database.lower() != "duckdb":
+    if request.database.lower() != "duckdb" and request.agent_type != "de":
         raise HTTPException(
             status_code=400,
             detail="Only DuckDB is supported for /api/chat.",
@@ -92,6 +92,9 @@ async def chat(
             magic_dashboard_name=request.magic_dashboard_name,
             magic_goal=request.magic_goal,
             attached_dashboard_name=request.attached_dashboard_name,
+            pipeline_id=request.pipeline_id,
+            connector_config_id=request.connector_config_id,
+            connector_name=request.connector_name,
         ),
         media_type="text/event-stream",
         headers={
